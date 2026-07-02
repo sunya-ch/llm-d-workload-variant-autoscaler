@@ -16,6 +16,66 @@ type VariantAutoscalingConfigSpec struct {
 	VariantCost string `json:"variantCost,omitempty"`
 }
 
+// VerticalScalingSpec groups all per-variant vertical scaling knobs.
+// Vertical scaling adjusts the GPU compute and memory fraction allocated to
+// each replica.
+type VerticalScalingSpec struct {
+	// Enabled activates vertical scaling for this variant.
+	// When false (the default), the optimizer performs horizontal scaling only
+	// and all other fields in this struct are ignored.
+	//
+	// +optional
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled,omitempty"`
+
+	// BootstrapGPUFraction is the bootstrap GPU compute and memory fraction for each
+	// replica of this variant (0.01–1.0, at most 2 decimal places).
+	//
+	// The optimizer reads this value on first run. Once vertical scaling begins,
+	// the current fraction is tracked in status.desiredOptimizedAlloc.gpuFraction.
+	//
+	// Example: gpuFraction: 0.50 starts each replica at 50% of the GPU slice.
+	//
+	// +optional
+	// +kubebuilder:validation:Minimum=0.01
+	// +kubebuilder:validation:Maximum=1.0
+	// +kubebuilder:default=1.0
+	BootstrapGPUFraction *float64 `json:"bootstrapGPUFraction,omitempty"`
+
+	// ScaleUpStep is the fixed GPU fraction added per scale-up step
+	// (0.01–0.99, at most 2 decimal places).
+	// The resulting fraction is rounded to 2 decimal places at runtime.
+	//
+	// +optional
+	// +kubebuilder:validation:Minimum=0.01
+	// +kubebuilder:validation:Maximum=0.99
+	// +kubebuilder:default=0.10
+	ScaleUpStep *float64 `json:"scaleUpStep,omitempty"`
+
+	// ScaleDownStep is the fixed GPU fraction subtracted per scale-down step
+	// (0.01–0.99, at most 2 decimal places).
+	// The resulting fraction is rounded to 2 decimal places at runtime.
+	//
+	// +optional
+	// +kubebuilder:validation:Minimum=0.01
+	// +kubebuilder:validation:Maximum=0.99
+	// +kubebuilder:default=0.10
+	ScaleDownStep *float64 `json:"scaleDownStep,omitempty"`
+
+	// MinGPUFraction is the vertical scale-down floor for this variant (0.01–1.0).
+	// The optimizer will not shrink GPUFraction below this value.
+	// The floor is itself rounded to 2 decimal places at runtime.
+	//
+	// When nil, the value from the SaturationScalingConfig ConfigMap field
+	// minGPUFraction is used (default 0.10).
+	//
+	// +optional
+	// +kubebuilder:validation:Minimum=0.01
+	// +kubebuilder:validation:Maximum=1.0
+	// +kubebuilder:default=0.10
+	MinGPUFraction *float64 `json:"minGPUFraction,omitempty"`
+}
+
 // VariantAutoscalingSpec defines the desired state for autoscaling a model variant.
 // +kubebuilder:validation:XValidation:rule="!has(self.minReplicas) || self.minReplicas <= self.maxReplicas",message="minReplicas must be less than or equal to maxReplicas"
 type VariantAutoscalingSpec struct {
@@ -45,6 +105,12 @@ type VariantAutoscalingSpec struct {
 
 	// VariantAutoscalingConfigSpec holds optional tuning fields that integrators can embed.
 	VariantAutoscalingConfigSpec `json:",inline"`
+
+	// VerticalScaling groups the per-variant vertical scaling configuration.
+	// When omitted, vertical scaling is disabled for this variant (equivalent to
+	// gpuFraction: 1.0 with no dynamic adjustment).
+	// +optional
+	VerticalScaling VerticalScalingSpec `json:"verticalScaling,omitempty"`
 }
 
 // VariantAutoscalingStatus represents the current status of autoscaling for a variant,
@@ -81,6 +147,16 @@ type OptimizedAlloc struct {
 	// nil means no optimization decision has been made yet.
 	// +kubebuilder:validation:Minimum=0
 	NumReplicas *int32 `json:"numReplicas,omitempty"`
+
+	// GPUFraction is the GPU compute and memory fraction last applied to this
+	// variant's DRA ResourceClaim by the vertical actuator (0.01–1.0).
+	// nil means no vertical scaling decision has been made yet (the bootstrap
+	// value from spec.gpuFraction is used for the first decision).
+	// Populated after the first vertical scale-up or scale-down cycle.
+	// +optional
+	// +kubebuilder:validation:Minimum=0.01
+	// +kubebuilder:validation:Maximum=1.0
+	GPUFraction *float64 `json:"gpuFraction,omitempty"`
 }
 
 // ActuationStatus provides details about the actuation process and its current status.
