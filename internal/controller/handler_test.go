@@ -26,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -43,6 +44,9 @@ func scalerTestScheme(t *testing.T) *runtime.Scheme {
 	}
 	if err := kedav1alpha1.AddToScheme(s); err != nil {
 		t.Fatalf("add kedav1alpha1: %v", err)
+	}
+	if err := vpav1.AddToScheme(s); err != nil {
+		t.Fatalf("add vpav1: %v", err)
 	}
 	return s
 }
@@ -191,5 +195,176 @@ func TestScaledObjectReconciler_UntracksOnAnnotationRemoval(t *testing.T) {
 	}
 	if ds.IsNamespaceTracked("ns1") {
 		t.Error("want ns1 untracked when llm-d.ai/managed annotation is removed")
+	}
+}
+
+// --- VPAReconciler tests ---
+
+func TestVPAReconciler_TracksNamespace(t *testing.T) {
+	s := scalerTestScheme(t)
+	vpa := &vpav1.VerticalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "vpa-a",
+			Namespace:   "ns1",
+			Annotations: map[string]string{annotations.Managed: "true"},
+		},
+		Spec: vpav1.VerticalPodAutoscalerSpec{
+			Recommenders: []*vpav1.VerticalPodAutoscalerRecommenderSelector{
+				{Name: vpaPrometheusRecommender},
+			},
+		},
+	}
+	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(vpa).Build()
+	ds := datastore.NewDatastore(config.NewTestConfig())
+
+	r := &VPAReconciler{Client: cl, Datastore: ds}
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "vpa-a", Namespace: "ns1"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ds.IsNamespaceTracked("ns1") {
+		t.Error("want ns1 tracked after managed VPA reconcile with prometheus recommender")
+	}
+}
+
+func TestVPAReconciler_UntracksOnNotFound(t *testing.T) {
+	s := scalerTestScheme(t)
+	cl := fake.NewClientBuilder().WithScheme(s).Build()
+	ds := datastore.NewDatastore(config.NewTestConfig())
+	ds.NamespaceTrack("AnnotatedScaler", "vpa-a", "ns1")
+
+	r := &VPAReconciler{Client: cl, Datastore: ds}
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "vpa-a", Namespace: "ns1"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ds.IsNamespaceTracked("ns1") {
+		t.Error("want ns1 untracked when VPA is not found (deleted)")
+	}
+}
+
+func TestVPAReconciler_UntracksOnDeletion(t *testing.T) {
+	s := scalerTestScheme(t)
+	now := metav1.NewTime(time.Now())
+	vpa := &vpav1.VerticalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "vpa-a",
+			Namespace:         "ns1",
+			Finalizers:        []string{"test"},
+			DeletionTimestamp: &now,
+			Annotations:       map[string]string{annotations.Managed: "true"},
+		},
+	}
+	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(vpa).Build()
+	ds := datastore.NewDatastore(config.NewTestConfig())
+	ds.NamespaceTrack("AnnotatedScaler", "vpa-a", "ns1")
+
+	r := &VPAReconciler{Client: cl, Datastore: ds}
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "vpa-a", Namespace: "ns1"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ds.IsNamespaceTracked("ns1") {
+		t.Error("want ns1 untracked when VPA has deletion timestamp")
+	}
+}
+
+func TestVPAReconciler_UntracksOnAnnotationRemoval(t *testing.T) {
+	s := scalerTestScheme(t)
+	vpa := &vpav1.VerticalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{Name: "vpa-a", Namespace: "ns1"},
+	}
+	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(vpa).Build()
+	ds := datastore.NewDatastore(config.NewTestConfig())
+	ds.NamespaceTrack("AnnotatedScaler", "vpa-a", "ns1")
+
+	r := &VPAReconciler{Client: cl, Datastore: ds}
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "vpa-a", Namespace: "ns1"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ds.IsNamespaceTracked("ns1") {
+		t.Error("want ns1 untracked when llm-d.ai/managed annotation is removed")
+	}
+}
+
+func TestVPAReconciler_UntracksOnNoRecommender(t *testing.T) {
+	s := scalerTestScheme(t)
+	vpa := &vpav1.VerticalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "vpa-a",
+			Namespace:   "ns1",
+			Annotations: map[string]string{annotations.Managed: "true"},
+		},
+		// No Recommenders set — uses the default built-in recommender.
+	}
+	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(vpa).Build()
+	ds := datastore.NewDatastore(config.NewTestConfig())
+	ds.NamespaceTrack("AnnotatedScaler", "vpa-a", "ns1")
+
+	r := &VPAReconciler{Client: cl, Datastore: ds}
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "vpa-a", Namespace: "ns1"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ds.IsNamespaceTracked("ns1") {
+		t.Error("want ns1 untracked when VPA uses default (non-prometheus) recommender")
+	}
+}
+
+func TestVPAReconciler_UntracksOnWrongRecommender(t *testing.T) {
+	s := scalerTestScheme(t)
+	vpa := &vpav1.VerticalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "vpa-a",
+			Namespace:   "ns1",
+			Annotations: map[string]string{annotations.Managed: "true"},
+		},
+		Spec: vpav1.VerticalPodAutoscalerSpec{
+			Recommenders: []*vpav1.VerticalPodAutoscalerRecommenderSelector{
+				{Name: "some-other-recommender"},
+			},
+		},
+	}
+	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(vpa).Build()
+	ds := datastore.NewDatastore(config.NewTestConfig())
+	ds.NamespaceTrack("AnnotatedScaler", "vpa-a", "ns1")
+
+	r := &VPAReconciler{Client: cl, Datastore: ds}
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "vpa-a", Namespace: "ns1"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ds.IsNamespaceTracked("ns1") {
+		t.Error("want ns1 untracked when VPA uses a non-prometheus recommender")
+	}
+}
+
+func TestVPAReconciler_UntracksOnMultipleRecommenders(t *testing.T) {
+	s := scalerTestScheme(t)
+	vpa := &vpav1.VerticalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "vpa-a",
+			Namespace:   "ns1",
+			Annotations: map[string]string{annotations.Managed: "true"},
+		},
+		Spec: vpav1.VerticalPodAutoscalerSpec{
+			Recommenders: []*vpav1.VerticalPodAutoscalerRecommenderSelector{
+				{Name: vpaPrometheusRecommender},
+				{Name: "another"},
+			},
+		},
+	}
+	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(vpa).Build()
+	ds := datastore.NewDatastore(config.NewTestConfig())
+	ds.NamespaceTrack("AnnotatedScaler", "vpa-a", "ns1")
+
+	r := &VPAReconciler{Client: cl, Datastore: ds}
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "vpa-a", Namespace: "ns1"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ds.IsNamespaceTracked("ns1") {
+		t.Error("want ns1 untracked when VPA specifies more than one recommender")
 	}
 }

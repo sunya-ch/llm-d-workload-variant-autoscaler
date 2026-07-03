@@ -71,6 +71,7 @@ import (
 	"github.com/prometheus/client_golang/api"
 	promv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	corev1 "k8s.io/api/core/v1"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	inferencePoolV1 "sigs.k8s.io/gateway-api-inference-extension/api/v1"
 	inferencePoolV1alpha2 "sigs.k8s.io/gateway-api-inference-extension/apix/v1alpha2"
@@ -91,6 +92,9 @@ func init() {
 	// KEDA scheme is registered unconditionally so the client can list ScaledObjects
 	// when the CRD is present. Listing fails gracefully (NoMatchError) when not installed.
 	utilruntime.Must(kedav1alpha1.AddToScheme(scheme))
+	// VPA scheme is registered unconditionally so the client can list VPAs
+	// when the CRD is present. Listing fails gracefully (NoMatchError) when not installed.
+	utilruntime.Must(vpav1.AddToScheme(scheme))
 	// Note: LeaderWorkerSet scheme is added conditionally in main() after checking if CRD exists
 	// +kubebuilder:scaffold:scheme
 }
@@ -222,6 +226,14 @@ func main() {
 	// Gate the pod locator's ScaledObject lookups on KEDA availability. Set before
 	// the saturation engine goroutine constructs its locator.
 	locator.SetKEDAEnabled(kedaEnabled)
+
+	// Detect VPA for annotation-based VerticalPodAutoscaler discovery.
+	vpaEnabled := crd.CheckVPACRD(restConfig, setupLog)
+	if vpaEnabled {
+		setupLog.Info("VPA VerticalPodAutoscaler CRD detected - annotation-based VPA discovery enabled")
+	} else {
+		setupLog.Info("VPA VerticalPodAutoscaler CRD not found - annotation-based discovery limited to HPAs/KEDA")
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -557,6 +569,17 @@ func main() {
 			Datastore: ds,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create ScaledObject controller")
+			os.Exit(1)
+		}
+	}
+
+	// VPAReconciler: registered only when VPA CRD is present.
+	if vpaEnabled {
+		if err = (&controller.VPAReconciler{
+			Client:    mgr.GetClient(),
+			Datastore: ds,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create VPA controller")
 			os.Exit(1)
 		}
 	}

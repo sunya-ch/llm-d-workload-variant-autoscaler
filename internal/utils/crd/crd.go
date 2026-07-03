@@ -85,3 +85,9 @@ func CheckLeaderWorkerSetCRD(restConfig *rest.Config, logger logr.Logger) bool {
 func CheckVariantAutoscalingCRD(restConfig *rest.Config, logger logr.Logger) (bool, error) {
 	return DetectCRDInstalled(restConfig, llmdVariantAutoscalingV1alpha1.GroupVersion.String(), "VariantAutoscaling", logger)
 }
+
+// CheckVPACRD reports whether the VerticalPodAutoscaler CRD is installed.
+// TODO: checked once at startup; handle VPA installed after controller starts.
+func CheckVPACRD(restConfig *rest.Config, logger logr.Logger) bool {
+	return CheckCRDInstalled(restConfig, "autoscaling.k8s.io/v1", "VerticalPodAutoscaler", logger)
+}
