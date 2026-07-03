@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -885,4 +886,209 @@ func TestFetchScaleTarget_LWSReturnsAccessor(t *testing.T) {
 	assert.Equal(t, "default", accessor.GetNamespace())
 	assert.Equal(t, int32(5), *accessor.GetReplicas())
 	assert.Equal(t, int32(4), accessor.GetGroupSize())
+}
+
+func TestFetchScaleTarget_ResourceClaimTemplate(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, appsv1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, resourcev1.AddToScheme(scheme))
+
+	rctName := "gpu-claim-template"
+	rct := &resourcev1.ResourceClaimTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: rctName, Namespace: "default"},
+	}
+
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-deploy", Namespace: "default"},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "test"}},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "test"}},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "main", Image: "img:latest"}},
+					ResourceClaims: []corev1.PodResourceClaim{
+						{Name: "gpu", ResourceClaimTemplateName: &rctName},
+					},
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deploy, rct).Build()
+
+	accessor, err := FetchScaleTarget(context.Background(), fakeClient, "va", constants.DeploymentKind, "test-deploy", "default")
+	require.NoError(t, err)
+	require.NotNil(t, accessor)
+
+	// Deployment: leader == worker, both return the same template.
+	got := accessor.GetLeaderResourceClaimTemplate()
+	require.NotNil(t, got)
+	assert.Equal(t, rctName, got.Name)
+	assert.Equal(t, got, accessor.GetWorkerResourceClaimTemplate())
+}
+
+func TestFetchScaleTarget_ResourceClaimTemplateMissing(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, appsv1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, resourcev1.AddToScheme(scheme))
+
+	rctName := "missing-template"
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-deploy", Namespace: "default"},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "test"}},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "test"}},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "main", Image: "img:latest"}},
+					ResourceClaims: []corev1.PodResourceClaim{
+						{Name: "gpu", ResourceClaimTemplateName: &rctName},
+					},
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deploy).Build()
+
+	accessor, err := FetchScaleTarget(context.Background(), fakeClient, "va", constants.DeploymentKind, "test-deploy", "default")
+	require.NoError(t, err)
+	require.NotNil(t, accessor)
+
+	// Missing template is skipped gracefully; accessor still succeeds with nil.
+	assert.Nil(t, accessor.GetLeaderResourceClaimTemplate())
+	assert.Nil(t, accessor.GetWorkerResourceClaimTemplate())
+}
+
+func TestFetchScaleTarget_NoResourceClaims(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, appsv1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, resourcev1.AddToScheme(scheme))
+
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "no-claims-deploy", Namespace: "default"},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "test"}},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "test"}},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "main", Image: "img:latest"}},
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deploy).Build()
+
+	accessor, err := FetchScaleTarget(context.Background(), fakeClient, "va", constants.DeploymentKind, "no-claims-deploy", "default")
+	require.NoError(t, err)
+	require.NotNil(t, accessor)
+
+	assert.Nil(t, accessor.GetLeaderResourceClaimTemplate())
+	assert.Nil(t, accessor.GetWorkerResourceClaimTemplate())
+}
+
+func TestFetchScaleTarget_LWS_ResourceClaimTemplates(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, lwsv1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, resourcev1.AddToScheme(scheme))
+
+	leaderRCTName := "lws-leader-gpu-claim-template"
+	workerRCTName := "lws-worker-gpu-claim-template"
+	leaderRCT := &resourcev1.ResourceClaimTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: leaderRCTName, Namespace: "default"},
+	}
+	workerRCT := &resourcev1.ResourceClaimTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: workerRCTName, Namespace: "default"},
+	}
+
+	lws := &lwsv1.LeaderWorkerSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-lws", Namespace: "default"},
+		Spec: lwsv1.LeaderWorkerSetSpec{
+			Replicas: int32Ptr(2),
+			LeaderWorkerTemplate: lwsv1.LeaderWorkerTemplate{
+				Size: int32Ptr(2),
+				LeaderTemplate: &corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"role": "leader"}},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "leader", Image: "leader:latest"}},
+						ResourceClaims: []corev1.PodResourceClaim{
+							{Name: "gpu", ResourceClaimTemplateName: &leaderRCTName},
+						},
+					},
+				},
+				WorkerTemplate: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"role": "worker"}},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "worker", Image: "worker:latest"}},
+						ResourceClaims: []corev1.PodResourceClaim{
+							{Name: "gpu", ResourceClaimTemplateName: &workerRCTName},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leaderRCT, workerRCT).Build()
+
+	accessor, err := FetchScaleTarget(context.Background(), fakeClient, "va", constants.LeaderWorkerSetKind, "test-lws", "default")
+	require.NoError(t, err)
+	require.NotNil(t, accessor)
+
+	gotLeader := accessor.GetLeaderResourceClaimTemplate()
+	require.NotNil(t, gotLeader)
+	assert.Equal(t, leaderRCTName, gotLeader.Name)
+
+	gotWorker := accessor.GetWorkerResourceClaimTemplate()
+	require.NotNil(t, gotWorker)
+	assert.Equal(t, workerRCTName, gotWorker.Name)
+}
+
+func TestFetchScaleTarget_LWS_NoLeaderTemplate_WorkerClaimTemplate(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, lwsv1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, resourcev1.AddToScheme(scheme))
+
+	workerRCTName := "lws-worker-gpu-claim-template"
+	workerRCT := &resourcev1.ResourceClaimTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: workerRCTName, Namespace: "default"},
+	}
+
+	lws := &lwsv1.LeaderWorkerSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-lws", Namespace: "default"},
+		Spec: lwsv1.LeaderWorkerSetSpec{
+			Replicas: int32Ptr(1),
+			LeaderWorkerTemplate: lwsv1.LeaderWorkerTemplate{
+				// No LeaderTemplate — leader falls back to worker template for pod spec,
+				// but the leader ResourceClaimTemplate fetch returns nil.
+				WorkerTemplate: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "worker", Image: "worker:latest"}},
+						ResourceClaims: []corev1.PodResourceClaim{
+							{Name: "gpu", ResourceClaimTemplateName: &workerRCTName},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, workerRCT).Build()
+
+	accessor, err := FetchScaleTarget(context.Background(), fakeClient, "va", constants.LeaderWorkerSetKind, "test-lws", "default")
+	require.NoError(t, err)
+	require.NotNil(t, accessor)
+
+	// Leader template is nil, so leader claim is nil.
+	assert.Nil(t, accessor.GetLeaderResourceClaimTemplate())
+	// Worker claim is fetched from the worker template.
+	gotWorker := accessor.GetWorkerResourceClaimTemplate()
+	require.NotNil(t, gotWorker)
+	assert.Equal(t, workerRCTName, gotWorker.Name)
 }

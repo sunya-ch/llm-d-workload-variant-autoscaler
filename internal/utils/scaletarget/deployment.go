@@ -3,23 +3,33 @@ package scaletarget
 import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/resources"
 )
 
 type deploymentAccessor struct {
-	deployment *appsv1.Deployment
+	deployment            *appsv1.Deployment
+	resourceClaimTemplate *resourcev1.ResourceClaimTemplate
 }
 
 func NewDeploymentAccessor(deploy *appsv1.Deployment) ScaleTargetAccessor {
 	if deploy == nil {
 		return nil
 	}
-	accessor := deploymentAccessor{
-		deployment: deploy,
+	return &deploymentAccessor{deployment: deploy}
+}
+
+// NewDeploymentAccessorWithClaim creates a deploymentAccessor that also
+// exposes the first DRA ResourceClaimTemplate referenced by the pod template.
+// For a Deployment leader == worker, so the same template is returned by both
+// GetLeaderResourceClaimTemplate and GetWorkerResourceClaimTemplate.
+func NewDeploymentAccessorWithClaim(deploy *appsv1.Deployment, rct *resourcev1.ResourceClaimTemplate) ScaleTargetAccessor {
+	if deploy == nil {
+		return nil
 	}
-	return &accessor
+	return &deploymentAccessor{deployment: deploy, resourceClaimTemplate: rct}
 }
 
 func (r *deploymentAccessor) GetReplicas() *int32 {
@@ -74,4 +84,13 @@ func (r *deploymentAccessor) GetName() string {
 func (r *deploymentAccessor) GetNamespace() string {
 	// r.deployment is always not nil
 	return r.deployment.Namespace
+}
+
+func (r *deploymentAccessor) GetLeaderResourceClaimTemplate() *resourcev1.ResourceClaimTemplate {
+	return r.resourceClaimTemplate
+}
+
+func (r *deploymentAccessor) GetWorkerResourceClaimTemplate() *resourcev1.ResourceClaimTemplate {
+	// A Deployment has a single pod template; leader == worker.
+	return r.resourceClaimTemplate
 }

@@ -26,12 +26,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
+	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-
-	corev1 "k8s.io/api/core/v1"
 
 	llmdVariantAutoscalingV1alpha1 "github.com/llm-d/llm-d-workload-variant-autoscaler/api/v1alpha1"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/collector/source"
@@ -665,6 +665,12 @@ func (m *mockScaleTargetAccessor) GetTotalGPUsPerReplica() int                  
 func (m *mockScaleTargetAccessor) GetLeaderPodTemplateSpec() *corev1.PodTemplateSpec { return nil }
 func (m *mockScaleTargetAccessor) GetWorkerPodTemplateSpec() *corev1.PodTemplateSpec { return nil }
 func (m *mockScaleTargetAccessor) GetGroupSize() int32                               { return 1 }
+func (m *mockScaleTargetAccessor) GetLeaderResourceClaimTemplate() *resourcev1.ResourceClaimTemplate {
+	return nil
+}
+func (m *mockScaleTargetAccessor) GetWorkerResourceClaimTemplate() *resourcev1.ResourceClaimTemplate {
+	return nil
+}
 
 // TestCollectReplicaMetrics_UnattributedReadyPodsEvent verifies that when a VA
 // has Ready pods but none are attributed this cycle, a Warning/UnattributedReadyPods

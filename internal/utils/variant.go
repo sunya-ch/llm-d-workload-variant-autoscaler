@@ -24,6 +24,7 @@ import (
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -302,6 +303,52 @@ func annotationSourcedVariants(ctx context.Context, k8sClient client.Client) ([]
 			}
 			key := fmt.Sprintf("%s/%s/%s", va.Namespace, va.Spec.ScaleTargetRef.Kind, va.Spec.ScaleTargetRef.Name)
 			byTarget[key] = *va
+		}
+	}
+
+	// VPAs — may not be installed; handle gracefully.
+	// When a VPA targets the same Deployment as an existing HPA/ScaledObject entry,
+	// the VPA's ResourceClaimPolicy is merged onto that entry rather than replacing it
+	// so the unified variant carries both horizontal bounds and the DRA resource claim.
+	// When no HPA/SO entry exists for the target yet (VPA created before HPA), a
+	// VPA-only VA is seeded with MaxReplicas=1; it will be superseded on the next tick
+	// once the HPA appears.
+	// TODO(#1134): scope to tracked namespaces only.
+	var vpaList vpav1.VerticalPodAutoscalerList
+	if err := k8sClient.List(ctx, &vpaList); err != nil {
+		if apimeta.IsNoMatchError(err) {
+			logger.V(logging.DEBUG).Info("VPA CRD not available, skipping annotation discovery for VPAs")
+		} else {
+			// Non-fatal: return what we have so far.
+			result := make([]wvav1alpha1.VariantAutoscaling, 0, len(byTarget))
+			for _, va := range byTarget {
+				result = append(result, va)
+			}
+			return result, fmt.Errorf("listing VPAs: %w", err)
+		}
+	} else {
+		for i := range vpaList.Items {
+			vpa := &vpaList.Items[i]
+			if !annotations.IsManaged(vpa) || !vpa.DeletionTimestamp.IsZero() || !HasPrometheusRecommender(vpa) {
+				continue
+			}
+			vaFromVPA, err := VariantAutoscalingFromVPA(vpa)
+			if err != nil {
+				logger.V(logging.DEBUG).Info("Skipping VPA with invalid WVA annotations",
+					"namespace", vpa.Namespace, "name", vpa.Name, "error", err)
+				continue
+			}
+			key := fmt.Sprintf("%s/%s/%s", vaFromVPA.Namespace,
+				vaFromVPA.Spec.ScaleTargetRef.Kind, vaFromVPA.Spec.ScaleTargetRef.Name)
+
+			if existing, ok := byTarget[key]; ok {
+				// Merge: keep horizontal bounds from HPA/SO, add VPA's ResourceClaimPolicy.
+				existing.Spec.ResourceClaimPolicy = vaFromVPA.Spec.ResourceClaimPolicy
+				byTarget[key] = existing
+			} else {
+				// VPA-only entry: no HPA/SO seen yet for this target.
+				byTarget[key] = *vaFromVPA
+			}
 		}
 	}
 

@@ -5,8 +5,8 @@ metadata:
   labels:
     app.kubernetes.io/name: workload-variant-autoscaler
 rules:
-- nonResourceURLs:
-  - /metrics
-  - /debug/pprof/*
-  verbs:
-  - get
+  - nonResourceURLs:
+      - /metrics
+      - /debug/pprof/*
+    verbs:
+      - get

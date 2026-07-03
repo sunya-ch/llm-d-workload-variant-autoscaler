@@ -20,8 +20,11 @@ import (
 	"testing"
 
 	kedav1alpha1 "github.com/kedacore/keda/v2/apis/keda/v1alpha1"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
+	resourcev1 "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/utils/ptr"
 
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/annotations"
@@ -104,7 +107,7 @@ func TestVariantAutoscalingFromScaledObject_DefaultKind(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if va.Spec.ScaleTargetRef.Kind != "Deployment" {
+	if va.Spec.ScaleTargetRef.Kind != utils.KindDeployment {
 		t.Errorf("Kind = %q, want Deployment", va.Spec.ScaleTargetRef.Kind)
 	}
 	if va.Spec.VariantCost != "10.0" {
@@ -233,5 +236,136 @@ func TestVariantAutoscalingFromScaledObject_ScaleToZero(t *testing.T) {
 	}
 	if va.Spec.MinReplicas == nil || *va.Spec.MinReplicas != 0 {
 		t.Errorf("MinReplicas = %v, want 0 (scale-to-zero must be honored, not floored to 1)", va.Spec.MinReplicas)
+	}
+}
+
+func TestVariantAutoscalingFromVPA(t *testing.T) {
+	claimTemplateName := "gpu-claim-template"
+	vpa := &vpav1.VerticalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "my-vpa",
+			Namespace:   "production",
+			Annotations: wvaAnnotations("ibm/granite-13b", "30.0"),
+			Labels:      map[string]string{"inference.optimization/acceleratorName": "h100"},
+		},
+		Spec: vpav1.VerticalPodAutoscalerSpec{
+			TargetRef: &autoscalingv1.CrossVersionObjectReference{
+				APIVersion: "apps/v1",
+				Kind:       "Deployment",
+				Name:       "granite-deploy",
+			},
+			ResourcePolicy: &vpav1.PodResourcePolicy{
+				ResourceClaimPolicies: []vpav1.ResourceClaimPolicy{
+					{
+						ClaimTemplateName:    claimTemplateName,
+						DeviceClassName:      "gpu.example.com",
+						ControlledCapacities: []resourcev1.QualifiedName{"memory", "compute"},
+					},
+				},
+			},
+		},
+	}
+
+	va, err := utils.VariantAutoscalingFromVPA(vpa)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !utils.IsSynthetic(va) {
+		t.Error("expected IsSynthetic to return true")
+	}
+	if va.Name != "my-vpa" {
+		t.Errorf("Name = %q, want %q", va.Name, "my-vpa")
+	}
+	if va.Namespace != "production" {
+		t.Errorf("Namespace = %q, want %q", va.Namespace, "production")
+	}
+	if va.Spec.ModelID != "ibm/granite-13b" {
+		t.Errorf("ModelID = %q, want %q", va.Spec.ModelID, "ibm/granite-13b")
+	}
+	if va.Spec.VariantCost != "30.0" {
+		t.Errorf("VariantCost = %q, want %q", va.Spec.VariantCost, "30.0")
+	}
+	if va.Spec.ScaleTargetRef.Name != "granite-deploy" {
+		t.Errorf("ScaleTargetRef.Name = %q, want %q", va.Spec.ScaleTargetRef.Name, "granite-deploy")
+	}
+	if va.Spec.ScaleTargetRef.Kind != utils.KindDeployment {
+		t.Errorf("ScaleTargetRef.Kind = %q, want Deployment", va.Spec.ScaleTargetRef.Kind)
+	}
+	if va.Spec.MinReplicas == nil || *va.Spec.MinReplicas != 1 {
+		t.Errorf("MinReplicas = %v, want 1", va.Spec.MinReplicas)
+	}
+	if va.Spec.MaxReplicas != 1 {
+		t.Errorf("MaxReplicas = %d, want 1", va.Spec.MaxReplicas)
+	}
+	if va.Labels["inference.optimization/acceleratorName"] != "h100" {
+		t.Errorf("Labels[acceleratorName] = %q, want h100", va.Labels["inference.optimization/acceleratorName"])
+	}
+	if va.Spec.ResourceClaimPolicy == nil {
+		t.Fatal("ResourceClaimPolicy = nil, want non-nil")
+	}
+	if va.Spec.ResourceClaimPolicy.ClaimTemplateName != claimTemplateName {
+		t.Errorf("ClaimTemplateName = %q, want %q", va.Spec.ResourceClaimPolicy.ClaimTemplateName, claimTemplateName)
+	}
+	if va.Spec.ResourceClaimPolicy.DeviceClassName != "gpu.example.com" {
+		t.Errorf("DeviceClassName = %q, want %q", va.Spec.ResourceClaimPolicy.DeviceClassName, "gpu.example.com")
+	}
+}
+
+func TestVariantAutoscalingFromVPA_DefaultKind(t *testing.T) {
+	vpa := &vpav1.VerticalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "vpa",
+			Namespace:   "ns",
+			Annotations: wvaAnnotations("model/x", ""),
+		},
+		Spec: vpav1.VerticalPodAutoscalerSpec{
+			TargetRef: &autoscalingv1.CrossVersionObjectReference{Name: "my-deploy"},
+		},
+	}
+	va, err := utils.VariantAutoscalingFromVPA(vpa)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if va.Spec.ScaleTargetRef.Kind != utils.KindDeployment {
+		t.Errorf("Kind = %q, want Deployment", va.Spec.ScaleTargetRef.Kind)
+	}
+	if va.Spec.VariantCost != "10.0" {
+		t.Errorf("VariantCost = %q, want 10.0 (default)", va.Spec.VariantCost)
+	}
+	if va.Spec.MinReplicas == nil || *va.Spec.MinReplicas != 1 {
+		t.Errorf("MinReplicas = %v, want 1", va.Spec.MinReplicas)
+	}
+	if va.Spec.MaxReplicas != 1 {
+		t.Errorf("MaxReplicas = %d, want 1", va.Spec.MaxReplicas)
+	}
+	if va.Spec.ResourceClaimPolicy != nil {
+		t.Errorf("ResourceClaimPolicy = %v, want nil when no resourcePolicy", va.Spec.ResourceClaimPolicy)
+	}
+}
+
+func TestVariantAutoscalingFromVPA_NoTargetRef(t *testing.T) {
+	vpa := &vpav1.VerticalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "vpa",
+			Namespace:   "ns",
+			Annotations: wvaAnnotations("model/x", ""),
+		},
+		Spec: vpav1.VerticalPodAutoscalerSpec{TargetRef: nil},
+	}
+	if _, err := utils.VariantAutoscalingFromVPA(vpa); err == nil {
+		t.Error("expected error for nil targetRef")
+	}
+}
+
+func TestVariantAutoscalingFromVPA_MissingAnnotations(t *testing.T) {
+	vpa := &vpav1.VerticalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: "ns"},
+		Spec: vpav1.VerticalPodAutoscalerSpec{
+			TargetRef: &autoscalingv1.CrossVersionObjectReference{Name: "d"},
+		},
+	}
+	if _, err := utils.VariantAutoscalingFromVPA(vpa); err == nil {
+		t.Error("expected error for missing managed annotation")
 	}
 }

@@ -2,6 +2,7 @@ package scaletarget
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
@@ -9,17 +10,25 @@ import (
 )
 
 type lwsAccessor struct {
-	lws *lwsv1.LeaderWorkerSet
+	lws                         *lwsv1.LeaderWorkerSet
+	leaderResourceClaimTemplate *resourcev1.ResourceClaimTemplate
+	workerResourceClaimTemplate *resourcev1.ResourceClaimTemplate
 }
 
 func NewLWSAccessor(lws *lwsv1.LeaderWorkerSet) ScaleTargetAccessor {
 	if lws == nil {
 		return nil
 	}
-	accessor := lwsAccessor{
-		lws: lws,
+	return &lwsAccessor{lws: lws}
+}
+
+// NewLWSAccessorWithClaims creates an lwsAccessor that also exposes the first DRA
+// ResourceClaimTemplate for the leader and worker pod templates separately.
+func NewLWSAccessorWithClaims(lws *lwsv1.LeaderWorkerSet, leaderRCT, workerRCT *resourcev1.ResourceClaimTemplate) ScaleTargetAccessor {
+	if lws == nil {
+		return nil
 	}
-	return &accessor
+	return &lwsAccessor{lws: lws, leaderResourceClaimTemplate: leaderRCT, workerResourceClaimTemplate: workerRCT}
 }
 
 func (r *lwsAccessor) GetReplicas() *int32 {
@@ -92,4 +101,12 @@ func (r *lwsAccessor) GetName() string {
 func (r *lwsAccessor) GetNamespace() string {
 	// r.lws is always not nil
 	return r.lws.Namespace
+}
+
+func (r *lwsAccessor) GetLeaderResourceClaimTemplate() *resourcev1.ResourceClaimTemplate {
+	return r.leaderResourceClaimTemplate
+}
+
+func (r *lwsAccessor) GetWorkerResourceClaimTemplate() *resourcev1.ResourceClaimTemplate {
+	return r.workerResourceClaimTemplate
 }

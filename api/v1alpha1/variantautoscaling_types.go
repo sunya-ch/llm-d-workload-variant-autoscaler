@@ -3,6 +3,7 @@ package v1alpha1
 import (
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 )
 
 // VariantAutoscalingConfigSpec holds the optional tuning fields for a VariantAutoscaling.
@@ -45,6 +46,14 @@ type VariantAutoscalingSpec struct {
 
 	// VariantAutoscalingConfigSpec holds optional tuning fields that integrators can embed.
 	VariantAutoscalingConfigSpec `json:",inline"`
+
+	// ResourceClaimPolicy is the DRA ResourceClaim policy sourced from a VPA's
+	// spec.resourcePolicy.resourceClaimPolicies[0]. Populated only on synthetic VAs
+	// built from a VPA; never persisted to the Kubernetes API server.
+	// Used by the VerticalActuator to identify which ResourceClaimTemplate to patch
+	// and which device capacities it controls. Nil when vertical scaling is not configured.
+	// +optional
+	ResourceClaimPolicy *vpav1.ResourceClaimPolicy `json:"resourceClaimPolicy,omitempty"`
 }
 
 // VariantAutoscalingStatus represents the current status of autoscaling for a variant,
@@ -89,7 +98,7 @@ type ActuationStatus struct {
 	Applied bool `json:"applied"`
 }
 
-// +kubebuilder:deprecatedversion:warning="VariantAutoscaling is deprecated and will be removed in a future release. Migrate to the annotation-based path (add llm-d.ai/managed=true to your HPA or ScaledObject). See docs/developer-guide/migrating-from-va-crd.md for migration steps."
+// +kubebuilder:deprecatedversion:warning="VariantAutoscaling is deprecated and will be removed in a future release. Migrate to the annotation-based path (add llm-d.ai/managed=true to your HPA or ScaledObject). See docs/developer-guide/migrating-from-va-crd.md."
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=va

@@ -34,6 +34,7 @@ import (
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/annotations"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/config"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/datastore"
+	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/utils"
 )
 
 func scalerTestScheme(t *testing.T) *runtime.Scheme {
@@ -210,7 +211,7 @@ func TestVPAReconciler_TracksNamespace(t *testing.T) {
 		},
 		Spec: vpav1.VerticalPodAutoscalerSpec{
 			Recommenders: []*vpav1.VerticalPodAutoscalerRecommenderSelector{
-				{Name: vpaPrometheusRecommender},
+				{Name: utils.VPAPrometheusRecommender},
 			},
 		},
 	}
@@ -350,7 +351,7 @@ func TestVPAReconciler_UntracksOnMultipleRecommenders(t *testing.T) {
 		},
 		Spec: vpav1.VerticalPodAutoscalerSpec{
 			Recommenders: []*vpav1.VerticalPodAutoscalerRecommenderSelector{
-				{Name: vpaPrometheusRecommender},
+				{Name: utils.VPAPrometheusRecommender},
 				{Name: "another"},
 			},
 		},

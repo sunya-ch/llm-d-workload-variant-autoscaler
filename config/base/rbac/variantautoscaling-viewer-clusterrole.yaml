@@ -5,17 +5,17 @@ metadata:
     app.kubernetes.io/name: workload-variant-autoscaler
   name: variantautoscaling-viewer-role
 rules:
-- apiGroups:
-  - llmd.ai
-  resources:
-  - variantautoscalings
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - llmd.ai
-  resources:
-  - variantautoscalings/status
-  verbs:
-  - get
+  - apiGroups:
+      - llmd.ai
+    resources:
+      - variantautoscalings
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - llmd.ai
+    resources:
+      - variantautoscalings/status
+    verbs:
+      - get

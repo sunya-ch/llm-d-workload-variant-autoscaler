@@ -12,12 +12,7 @@ import (
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/annotations"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/datastore"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/logging"
-)
-
-const (
-	// vpaPrometheusRecommender is the recommender name that WVA requires on a managed VPA.
-	// VPAs using any other recommender (or the default built-in one) are not tracked.
-	vpaPrometheusRecommender = "prometheus"
+	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/utils"
 )
 
 // VPAReconciler tracks namespaces for annotation-based WVA discovery via VPA
@@ -49,8 +44,8 @@ func (r *VPAReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, err
 	}
 
-	if !vpa.DeletionTimestamp.IsZero() || !annotations.IsManaged(vpa) || !hasPrometheusRecommender(vpa) {
-		if annotations.IsManaged(vpa) && !hasPrometheusRecommender(vpa) {
+	if !vpa.DeletionTimestamp.IsZero() || !annotations.IsManaged(vpa) || !utils.HasPrometheusRecommender(vpa) {
+		if annotations.IsManaged(vpa) && !utils.HasPrometheusRecommender(vpa) {
 			ctrl.LoggerFrom(ctx).V(logging.DEBUG).Info(
 				"VPA is managed but does not use the prometheus recommender, not tracking",
 				"name", vpa.Name,
@@ -64,15 +59,6 @@ func (r *VPAReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	return ctrl.Result{}, nil
 }
 
-// hasPrometheusRecommender reports whether vpa specifies exactly the "prometheus"
-// external recommender. VPAs with no recommenders (default built-in) or a
-// different recommender name are not managed by WVA.
-func hasPrometheusRecommender(vpa *vpav1.VerticalPodAutoscaler) bool {
-	if len(vpa.Spec.Recommenders) != 1 {
-		return false
-	}
-	return vpa.Spec.Recommenders[0] != nil && vpa.Spec.Recommenders[0].Name == vpaPrometheusRecommender
-}
 
 // SetupWithManager registers VPAReconciler with the controller manager.
 func (r *VPAReconciler) SetupWithManager(mgr ctrl.Manager) error {

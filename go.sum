@@ -201,8 +201,8 @@ github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 github.com/subosito/gotenv v1.6.0 h1:9NlTDc1FTs4qu0DDq7AEtTPNw6SVm7uBMsUCUjABIf8=
 github.com/subosito/gotenv v1.6.0/go.mod h1:Dk4QP5c2W3ibzajGcXpNraDfq2IrhjMIvMSWPKKo0FU=
-github.com/sunya-ch/k8s-autoscaler/vertical-pod-autoscaler v0.0.0-20260701061717-e732adf08e0f h1:H4G+wsNU3R+SrkTgan+d5W+S+WxaZ3pVPX/U/QnCjt8=
-github.com/sunya-ch/k8s-autoscaler/vertical-pod-autoscaler v0.0.0-20260701061717-e732adf08e0f/go.mod h1:a+lKWC9gEXjrBlaYBdnotN6wVt0Tq+24qvpLm/Gn25g=
+github.com/sunya-ch/k8s-autoscaler/vertical-pod-autoscaler v0.0.0-20260703074225-cada62fc9d48 h1:Rq49OWqedHrYATGvcA/ZlOorQvqZzQmO4KMkgPXndmk=
+github.com/sunya-ch/k8s-autoscaler/vertical-pod-autoscaler v0.0.0-20260703074225-cada62fc9d48/go.mod h1:a+lKWC9gEXjrBlaYBdnotN6wVt0Tq+24qvpLm/Gn25g=
 github.com/tidwall/gjson v1.18.0 h1:FIDeeyB800efLX89e5a8Y0BNH+LOngJyGrIWxG2FKQY=
 github.com/tidwall/gjson v1.18.0/go.mod h1:/wbyibRr2FHMks5tjHJ5F8dMZh3AcwJEMf5vlfC0lxk=
 github.com/tidwall/match v1.1.1 h1:+Ho715JplO36QYgwN9PGYNhgZvoUSc9X2c80KVTi+GA=

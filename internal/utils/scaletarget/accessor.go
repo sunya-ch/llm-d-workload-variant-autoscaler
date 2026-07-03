@@ -2,6 +2,7 @@ package scaletarget
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -44,4 +45,18 @@ type ScaleTargetAccessor interface {
 	// For Deployment: always 1.
 	// For LWS: spec.leaderWorkerTemplate.size (1 leader + N-1 workers).
 	GetGroupSize() int32
+
+	// GetLeaderResourceClaimTemplate returns the first DRA ResourceClaimTemplate referenced by
+	// the scale target's leader pod template via spec.resourceClaims[*].resourceClaimTemplateName.
+	// For Deployment: the single pod template's claim (leader == worker).
+	// For LWS: the leader template's claim.
+	// Returns nil when none is referenced or the fetch failed.
+	GetLeaderResourceClaimTemplate() *resourcev1.ResourceClaimTemplate
+
+	// GetWorkerResourceClaimTemplate returns the first DRA ResourceClaimTemplate referenced by
+	// the scale target's worker pod template via spec.resourceClaims[*].resourceClaimTemplateName.
+	// For Deployment: same as GetLeaderResourceClaimTemplate() (single template).
+	// For LWS: the worker template's claim; may differ from the leader's.
+	// Returns nil when none is referenced or the fetch failed.
+	GetWorkerResourceClaimTemplate() *resourcev1.ResourceClaimTemplate
 }

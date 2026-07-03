@@ -22,12 +22,15 @@ import (
 	"testing"
 
 	kedav1alpha1 "github.com/kedacore/keda/v2/apis/keda/v1alpha1"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
+	resourcev1 "k8s.io/api/resource/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -143,7 +146,7 @@ func TestGroupVariantAutoscalingByModel(t *testing.T) {
 	}
 }
 
-// variantTestScheme builds a scheme with WVA, core Kubernetes (incl. HPA), and KEDA types.
+// variantTestScheme builds a scheme with WVA, core Kubernetes (incl. HPA), KEDA, and VPA types.
 func variantTestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
@@ -155,6 +158,9 @@ func variantTestScheme(t *testing.T) *runtime.Scheme {
 	}
 	if err := kedav1alpha1.AddToScheme(s); err != nil {
 		t.Fatalf("add kedav1alpha1: %v", err)
+	}
+	if err := vpav1.AddToScheme(s); err != nil {
+		t.Fatalf("add vpav1: %v", err)
 	}
 	return s
 }
@@ -304,6 +310,181 @@ func TestAnnotationSourcedVariants(t *testing.T) {
 		}
 		if result[0].Spec.ModelID != "model-so" {
 			t.Errorf("want ScaledObject to win, got modelID %q", result[0].Spec.ModelID)
+		}
+	})
+}
+
+// managedVPA returns a VPA with the prometheus recommender and WVA annotations.
+func managedVPA(ns, name, targetName, modelID string) *vpav1.VerticalPodAutoscaler {
+	return &vpav1.VerticalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: ns,
+			Annotations: map[string]string{
+				annotations.Managed: "true",
+				annotations.ModelID: modelID,
+			},
+		},
+		Spec: vpav1.VerticalPodAutoscalerSpec{
+			TargetRef: &autoscalingv1.CrossVersionObjectReference{
+				Kind: "Deployment",
+				Name: targetName,
+			},
+			Recommenders: []*vpav1.VerticalPodAutoscalerRecommenderSelector{
+				{Name: VPAPrometheusRecommender},
+			},
+			ResourcePolicy: &vpav1.PodResourcePolicy{
+				ResourceClaimPolicies: []vpav1.ResourceClaimPolicy{
+					{
+						ClaimTemplateName:    "gpu-claim",
+						DeviceClassName:      "gpu.example.com",
+						ControlledCapacities: []resourcev1.QualifiedName{"compute", "memory"},
+					},
+				},
+			},
+		},
+	}
+}
+
+func TestAnnotationSourcedVariants_VPA(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("VPA-only: no HPA — seeds VPA-only VA with MaxReplicas=1", func(t *testing.T) {
+		s := variantTestScheme(t)
+		cl := fake.NewClientBuilder().WithScheme(s).WithObjects(
+			managedVPA("ns1", "vpa-a", "deploy-a", "model-x"),
+		).Build()
+
+		result, err := annotationSourcedVariants(ctx, cl)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(result) != 1 {
+			t.Fatalf("want 1 VA, got %d", len(result))
+		}
+		va := result[0]
+		if va.Spec.MaxReplicas != 1 {
+			t.Errorf("MaxReplicas = %d, want 1 for VPA-only variant", va.Spec.MaxReplicas)
+		}
+		if va.Spec.ResourceClaimPolicy == nil {
+			t.Error("ResourceClaimPolicy = nil, want non-nil for VPA-only variant")
+		}
+	})
+
+	t.Run("HPA first, then VPA: merge yields HPA bounds + VPA ResourceClaimPolicy", func(t *testing.T) {
+		s := variantTestScheme(t)
+		cl := fake.NewClientBuilder().WithScheme(s).WithObjects(
+			managedHPA("ns1", "hpa-a", "deploy-a", "model-x"),
+			managedVPA("ns1", "vpa-a", "deploy-a", "model-x"),
+		).Build()
+
+		result, err := annotationSourcedVariants(ctx, cl)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(result) != 1 {
+			t.Fatalf("want 1 merged VA, got %d", len(result))
+		}
+		va := result[0]
+		if va.Spec.MaxReplicas != 5 {
+			t.Errorf("MaxReplicas = %d, want 5 (from HPA)", va.Spec.MaxReplicas)
+		}
+		if va.Spec.ResourceClaimPolicy == nil {
+			t.Error("ResourceClaimPolicy = nil, want non-nil (from VPA)")
+		}
+		if va.Spec.ResourceClaimPolicy.ClaimTemplateName != "gpu-claim" {
+			t.Errorf("ClaimTemplateName = %q, want %q", va.Spec.ResourceClaimPolicy.ClaimTemplateName, "gpu-claim")
+		}
+	})
+
+	t.Run("VPA first (VPA-only tick), then HPA arrives: next tick produces merged VA", func(t *testing.T) {
+		s := variantTestScheme(t)
+
+		// Tick 1: only the VPA exists — produces a VPA-only VA (MaxReplicas=1).
+		clVPAOnly := fake.NewClientBuilder().WithScheme(s).WithObjects(
+			managedVPA("ns1", "vpa-a", "deploy-a", "model-x"),
+		).Build()
+		tick1, err := annotationSourcedVariants(ctx, clVPAOnly)
+		if err != nil {
+			t.Fatalf("tick 1 unexpected error: %v", err)
+		}
+		if len(tick1) != 1 {
+			t.Fatalf("tick 1: want 1 VA, got %d", len(tick1))
+		}
+		if tick1[0].Spec.MaxReplicas != 1 {
+			t.Errorf("tick 1 MaxReplicas = %d, want 1 (VPA-only, conservative)", tick1[0].Spec.MaxReplicas)
+		}
+		if tick1[0].Spec.ResourceClaimPolicy == nil {
+			t.Error("tick 1: ResourceClaimPolicy = nil, want non-nil")
+		}
+
+		// Tick 2: HPA has now been created — merged VA carries HPA bounds + VPA policy.
+		clBoth := fake.NewClientBuilder().WithScheme(s).WithObjects(
+			managedHPA("ns1", "hpa-a", "deploy-a", "model-x"),
+			managedVPA("ns1", "vpa-a", "deploy-a", "model-x"),
+		).Build()
+		tick2, err := annotationSourcedVariants(ctx, clBoth)
+		if err != nil {
+			t.Fatalf("tick 2 unexpected error: %v", err)
+		}
+		if len(tick2) != 1 {
+			t.Fatalf("tick 2: want 1 merged VA, got %d", len(tick2))
+		}
+		va2 := tick2[0]
+		if va2.Spec.MaxReplicas != 5 {
+			t.Errorf("tick 2 MaxReplicas = %d, want 5 (from HPA)", va2.Spec.MaxReplicas)
+		}
+		if va2.Spec.ResourceClaimPolicy == nil {
+			t.Error("tick 2: ResourceClaimPolicy = nil, want non-nil (from VPA)")
+		}
+	})
+
+	t.Run("VPA not installed — NoMatchError skipped gracefully", func(t *testing.T) {
+		s := variantTestScheme(t)
+		vpaGK := schema.GroupKind{Group: "autoscaling.k8s.io", Kind: "VerticalPodAutoscaler"}
+		cl := fake.NewClientBuilder().WithScheme(s).WithObjects(
+			managedHPA("ns1", "hpa-a", "deploy-a", "model-x"),
+		).WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if _, ok := list.(*vpav1.VerticalPodAutoscalerList); ok {
+					return &apimeta.NoKindMatchError{GroupKind: vpaGK}
+				}
+				return c.List(ctx, list, opts...)
+			},
+		}).Build()
+
+		result, err := annotationSourcedVariants(ctx, cl)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(result) != 1 {
+			t.Errorf("want 1 VA from HPA (VPA NoMatch is non-fatal), got %d", len(result))
+		}
+		if result[0].Spec.ResourceClaimPolicy != nil {
+			t.Error("ResourceClaimPolicy should be nil when VPA CRD is absent")
+		}
+	})
+
+	t.Run("VPA non-NoMatch error: partial result returned", func(t *testing.T) {
+		s := variantTestScheme(t)
+		cl := fake.NewClientBuilder().WithScheme(s).WithObjects(
+			managedHPA("ns1", "hpa-a", "deploy-a", "model-x"),
+		).WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if _, ok := list.(*vpav1.VerticalPodAutoscalerList); ok {
+					return errors.New("vpa api unavailable")
+				}
+				return c.List(ctx, list, opts...)
+			},
+		}).Build()
+
+		result, err := annotationSourcedVariants(ctx, cl)
+		if err == nil {
+			t.Fatal("want error for non-NoMatch VPA list failure, got nil")
+		}
+		// Partial result (HPA-sourced VA) should still be returned.
+		if len(result) != 1 {
+			t.Errorf("want 1 partial VA (HPA-sourced), got %d", len(result))
 		}
 	})
 }

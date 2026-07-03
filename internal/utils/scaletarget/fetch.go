@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -15,6 +17,12 @@ import (
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/resources"
 )
 
+// FetchScaleTarget fetches the scale target resource and the first DRA ResourceClaimTemplate
+// for each pod template. The returned accessor exposes the templates via
+// GetLeaderResourceClaimTemplate() and GetWorkerResourceClaimTemplate(), enabling
+// the VerticalActuator to locate and patch the GPU fraction on the associated DRA ResourceClaims.
+// For Deployment both methods return the same template (single pod template).
+// For LWS the leader and worker templates are fetched independently.
 func FetchScaleTarget(ctx context.Context, c client.Client, vaName, kind, name, namespace string) (ScaleTargetAccessor, error) {
 	switch kind {
 	case constants.DeploymentKind, "": // matching "" for backward compatibility
@@ -35,7 +43,8 @@ func FetchScaleTarget(ctx context.Context, c client.Client, vaName, kind, name, 
 			}
 			return nil, err
 		}
-		return NewDeploymentAccessor(&deployment), nil
+		rct := fetchResourceClaimTemplate(ctx, c, &deployment.Spec.Template, namespace)
+		return NewDeploymentAccessorWithClaim(&deployment, rct), nil
 	case constants.LeaderWorkerSetKind:
 		var lws lwsv1.LeaderWorkerSet
 		if err := resources.GetResourceWithBackoff(ctx, c, client.ObjectKey{Name: name, Namespace: namespace}, &lws, constants.StandardBackoff, kind); err != nil {
@@ -54,7 +63,36 @@ func FetchScaleTarget(ctx context.Context, c client.Client, vaName, kind, name, 
 			}
 			return nil, err
 		}
-		return NewLWSAccessor(&lws), nil
+		leaderTemplate := lws.Spec.LeaderWorkerTemplate.LeaderTemplate
+		workerTemplate := &lws.Spec.LeaderWorkerTemplate.WorkerTemplate
+		leaderRCT := fetchResourceClaimTemplate(ctx, c, leaderTemplate, namespace)
+		workerRCT := fetchResourceClaimTemplate(ctx, c, workerTemplate, namespace)
+		return NewLWSAccessorWithClaims(&lws, leaderRCT, workerRCT), nil
 	}
 	return nil, fmt.Errorf("invalid scale target kind %q", kind)
+}
+
+// fetchResourceClaimTemplate returns the first DRA ResourceClaimTemplate referenced by
+// a pod template's spec.resourceClaims[*].resourceClaimTemplateName entries.
+// Returns nil if none are referenced or the first matching template cannot be fetched.
+func fetchResourceClaimTemplate(ctx context.Context, c client.Client, podTemplate *corev1.PodTemplateSpec, namespace string) *resourcev1.ResourceClaimTemplate {
+	if podTemplate == nil {
+		return nil
+	}
+	for _, prc := range podTemplate.Spec.ResourceClaims {
+		if prc.ResourceClaimTemplateName == nil {
+			continue
+		}
+		var rct resourcev1.ResourceClaimTemplate
+		key := client.ObjectKey{Name: *prc.ResourceClaimTemplateName, Namespace: namespace}
+		if err := c.Get(ctx, key, &rct); err != nil {
+			ctrl.LoggerFrom(ctx).V(logging.DEBUG).Info("ResourceClaimTemplate not found, skipping",
+				"name", *prc.ResourceClaimTemplateName,
+				"namespace", namespace,
+				"error", err)
+			continue
+		}
+		return &rct
+	}
+	return nil
 }

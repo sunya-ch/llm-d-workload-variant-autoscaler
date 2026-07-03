@@ -22,11 +22,31 @@ import (
 	kedav1alpha1 "github.com/kedacore/keda/v2/apis/keda/v1alpha1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/utils/ptr"
 
 	wvav1alpha1 "github.com/llm-d/llm-d-workload-variant-autoscaler/api/v1alpha1"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/annotations"
 )
+
+const (
+	KindDeployment = "Deployment"
+	DeploymentGV   = "apps/v1"
+
+	// VPAPrometheusRecommender is the recommender name WVA requires on a managed VPA.
+	// VPAs using any other recommender (or the default built-in one) are not tracked.
+	VPAPrometheusRecommender = "prometheus"
+)
+
+// HasPrometheusRecommender reports whether vpa specifies exactly the "prometheus"
+// external recommender. VPAs with no recommenders (default built-in) or a
+// different recommender name are not managed by WVA.
+func HasPrometheusRecommender(vpa *vpav1.VerticalPodAutoscaler) bool {
+	if len(vpa.Spec.Recommenders) != 1 {
+		return false
+	}
+	return vpa.Spec.Recommenders[0] != nil && vpa.Spec.Recommenders[0].Name == VPAPrometheusRecommender
+}
 
 // IsSynthetic reports whether va was synthesized from annotations on a ScaledObject or HPA
 // rather than read from a VariantAutoscaling CRD instance.
@@ -49,11 +69,11 @@ func VariantAutoscalingFromScaledObject(so *kedav1alpha1.ScaledObject) (*wvav1al
 
 	kind := so.Spec.ScaleTargetRef.Kind
 	if kind == "" {
-		kind = "Deployment"
+		kind = KindDeployment
 	}
 	apiVersion := so.Spec.ScaleTargetRef.APIVersion
 	if apiVersion == "" {
-		apiVersion = "apps/v1"
+		apiVersion = DeploymentGV
 	}
 
 	minReplicas := so.Spec.MinReplicaCount
@@ -98,11 +118,11 @@ func VariantAutoscalingFromHPA(hpa *autoscalingv2.HorizontalPodAutoscaler) (*wva
 
 	kind := hpa.Spec.ScaleTargetRef.Kind
 	if kind == "" {
-		kind = "Deployment"
+		kind = KindDeployment
 	}
 	apiVersion := hpa.Spec.ScaleTargetRef.APIVersion
 	if apiVersion == "" {
-		apiVersion = "apps/v1"
+		apiVersion = DeploymentGV
 	}
 
 	minReplicas := ptr.To(int32(1))
@@ -131,6 +151,64 @@ func VariantAutoscalingFromHPA(hpa *autoscalingv2.HorizontalPodAutoscaler) (*wva
 			VariantAutoscalingConfigSpec: wvav1alpha1.VariantAutoscalingConfigSpec{
 				VariantCost: parsed.VariantCost,
 			},
+		},
+	}, nil
+}
+
+// VariantAutoscalingFromVPA builds an in-memory VariantAutoscaling from a Kubernetes VPA
+// that bears the llm-d.ai/managed: "true" annotation.
+// Returns an error if required annotations are absent or spec.targetRef is nil.
+//
+// VPA has no native min/max replica fields; those horizontal bounds default to 1.
+// The first entry of spec.resourcePolicy.resourceClaimPolicies is carried on the
+// synthetic VA's ResourceClaimPolicy field so the VerticalActuator can identify
+// which ResourceClaimTemplate to patch and which device capacities it controls.
+func VariantAutoscalingFromVPA(vpa *vpav1.VerticalPodAutoscaler) (*wvav1alpha1.VariantAutoscaling, error) {
+	parsed, err := annotations.Parse(vpa)
+	if err != nil {
+		return nil, err
+	}
+	if vpa.Spec.TargetRef == nil || vpa.Spec.TargetRef.Name == "" {
+		return nil, fmt.Errorf("VPA %s/%s has no targetRef", vpa.Namespace, vpa.Name)
+	}
+
+	kind := vpa.Spec.TargetRef.Kind
+	if kind == "" {
+		kind = KindDeployment
+	}
+	apiVersion := vpa.Spec.TargetRef.APIVersion
+	if apiVersion == "" {
+		apiVersion = DeploymentGV
+	}
+
+	var resourceClaimPolicy *vpav1.ResourceClaimPolicy
+	if vpa.Spec.ResourcePolicy != nil && len(vpa.Spec.ResourcePolicy.ResourceClaimPolicies) > 0 {
+		p := vpa.Spec.ResourcePolicy.ResourceClaimPolicies[0]
+		resourceClaimPolicy = &p
+	}
+
+	return &wvav1alpha1.VariantAutoscaling{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vpa.Name,
+			Namespace: vpa.Namespace,
+			Labels:    vpa.Labels,
+			Annotations: map[string]string{
+				annotations.Synthetic: "true",
+			},
+		},
+		Spec: wvav1alpha1.VariantAutoscalingSpec{
+			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
+				APIVersion: apiVersion,
+				Kind:       kind,
+				Name:       vpa.Spec.TargetRef.Name,
+			},
+			ModelID:     parsed.ModelID,
+			MinReplicas: ptr.To(int32(1)),
+			MaxReplicas: 1,
+			VariantAutoscalingConfigSpec: wvav1alpha1.VariantAutoscalingConfigSpec{
+				VariantCost: parsed.VariantCost,
+			},
+			ResourceClaimPolicy: resourceClaimPolicy,
 		},
 	}, nil
 }

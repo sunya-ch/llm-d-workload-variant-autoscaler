@@ -12,6 +12,6 @@ roleRef:
   kind: ClusterRole
   name: metrics-reader
 subjects:
-- kind: ServiceAccount
-  name: kube-prometheus-stack-prometheus
-  namespace: workload-variant-autoscaler-monitoring
+  - kind: ServiceAccount
+    name: kube-prometheus-stack-prometheus
+    namespace: workload-variant-autoscaler-monitoring

@@ -57,7 +57,7 @@ require (
 replace (
 	k8s.io/api => k8s.io/api v0.34.5
 	k8s.io/apimachinery => k8s.io/apimachinery v0.34.5
-	k8s.io/autoscaler/vertical-pod-autoscaler => github.com/sunya-ch/k8s-autoscaler/vertical-pod-autoscaler v0.0.0-20260701061717-e732adf08e0f
+	k8s.io/autoscaler/vertical-pod-autoscaler => github.com/sunya-ch/k8s-autoscaler/vertical-pod-autoscaler v0.0.0-20260703074225-cada62fc9d48
 	k8s.io/client-go => k8s.io/client-go v0.34.5
 	k8s.io/component-base => k8s.io/component-base v0.34.3
 )
