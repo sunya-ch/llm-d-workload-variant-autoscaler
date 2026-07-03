@@ -104,16 +104,20 @@ var _ = AfterSuite(func() {
 
 // getKEDACRDDir returns the path to the KEDA CRD bases bundled with the
 // version of github.com/kedacore/keda/v2 that this module pins. Resolved at
-// test time via `go list -m` so the path tracks whatever go.mod says,
+// test time via go env + go list so the path tracks whatever go.mod says,
 // without hardcoding a version. Returns "" when resolution fails or the
 // directory does not exist; callers should skip appending the path in
 // that case.
 func getKEDACRDDir() string {
-	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "github.com/kedacore/keda/v2").Output()
+	cacheOut, err := exec.Command("go", "env", "GOMODCACHE").Output()
 	if err != nil {
 		return ""
 	}
-	dir := filepath.Join(strings.TrimSpace(string(out)), "config", "crd", "bases")
+	verOut, err := exec.Command("go", "list", "-m", "-f", "{{.Version}}", "github.com/kedacore/keda/v2").Output()
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Join(strings.TrimSpace(string(cacheOut)), "github.com/kedacore/keda/v2@"+strings.TrimSpace(string(verOut)), "config", "crd", "bases")
 	if _, err := os.Stat(dir); err != nil {
 		return ""
 	}

@@ -26,7 +26,7 @@ func (m ITLModel) ITLAt(k float64) float64 {
 // Returns (zero, false) when:
 //   - fewer than 2 observations are provided
 //   - k-spread across observations is zero (degenerate — no discriminating signal)
-//   - the fitted slope A ≤ 0 (inverted or flat fit — physically implausible)
+//   - the fitted slope A is near-zero or negative (flat or inverted fit — physically implausible)
 func FitITLModel(obs []ITLObservation) (ITLModel, bool) {
 	n := float64(len(obs))
 	if n < 2 {
@@ -54,7 +54,7 @@ func FitITLModel(obs []ITLObservation) (ITLModel, bool) {
 	if math.IsNaN(A) || math.IsInf(A, 0) {
 		return ITLModel{}, false
 	}
-	if A <= 0 {
+	if A < 1e-12 {
 		return ITLModel{}, false
 	}
 	// Defensive guard: NaN/Inf B is mathematically possible with degenerate input.
