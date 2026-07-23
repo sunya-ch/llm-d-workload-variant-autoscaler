@@ -9,6 +9,8 @@ import (
 
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/config"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/engines/aggregation"
+	analyzerconstants "github.com/llm-d/llm-d-workload-variant-autoscaler/internal/engines/analyzers"
+	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/engines/analyzers/observationstore"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/interfaces"
 )
 
@@ -24,14 +26,16 @@ type SaturationAnalyzer struct {
 	// TODO: check if we need to use other model parameters as key in the future.
 	computeCapacityHistory map[string]*rollingAverage
 	capacityStore          *CapacityKnowledgeStore
+	observationStore       *observationstore.VariantObservationStore
 }
 
 // NewSaturationAnalyzer creates a new V2 saturation analyzer backed by the
-// given capacity store.
-func NewSaturationAnalyzer(store *CapacityKnowledgeStore) *SaturationAnalyzer {
+// given capacity store and observation store.
+func NewSaturationAnalyzer(store *CapacityKnowledgeStore, obsStore *observationstore.VariantObservationStore) *SaturationAnalyzer {
 	return &SaturationAnalyzer{
 		computeCapacityHistory: make(map[string]*rollingAverage),
 		capacityStore:          store,
+		observationStore:       obsStore,
 	}
 }
 
@@ -63,6 +67,22 @@ func (a *SaturationAnalyzer) Analyze(ctx context.Context, input interfaces.Analy
 	satConfig, ok := input.Config.(*config.SaturationScalingConfig)
 	if !ok {
 		return nil, fmt.Errorf("expected *SaturationScalingConfig, got %T", input.Config)
+	}
+
+	// Update observation store with vertical scaling signals before capacity computation.
+	// Group metrics by variant first, then call UpdateFromReplicaMetrics per variant.
+	// GpuMemoryUtilization is carried on each ReplicaMetrics from the deployment args.
+	metricsByVariant := make(map[string][]interfaces.ReplicaMetrics, len(input.VariantStates))
+	for _, rm := range input.ReplicaMetrics {
+		metricsByVariant[rm.VariantName] = append(metricsByVariant[rm.VariantName], rm)
+	}
+	for variantName, rms := range metricsByVariant {
+		a.observationStore.UpdateFromReplicaMetrics(
+			input.Namespace, input.ModelID, variantName,
+			rms,
+			analyzerconstants.ComputeIntensityAlpha,
+			analyzerconstants.BytesPerKVToken,
+		)
 	}
 
 	// Build GPU count lookup from variant states

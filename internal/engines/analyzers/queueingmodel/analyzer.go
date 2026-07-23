@@ -7,6 +7,8 @@ import (
 	"math"
 	"time"
 
+	analyzerconstants "github.com/llm-d/llm-d-workload-variant-autoscaler/internal/engines/analyzers"
+	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/engines/analyzers/observationstore"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/engines/analyzers/queueingmodel/tuner"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/interfaces"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/pkg/analyzer"
@@ -22,12 +24,14 @@ import (
 type QueueingModelAnalyzer struct {
 	// modelsParameterStore stores learned parameters of variants for all models
 	modelsParameterStore map[string]*ParameterStore // key: modelKey (namespace/modelID)
+	observationStore     *observationstore.VariantObservationStore
 }
 
 // NewQueueingModelAnalyzer creates a new queueing model analyzer instance.
-func NewQueueingModelAnalyzer() *QueueingModelAnalyzer {
+func NewQueueingModelAnalyzer(obsStore *observationstore.VariantObservationStore) *QueueingModelAnalyzer {
 	return &QueueingModelAnalyzer{
 		modelsParameterStore: make(map[string]*ParameterStore),
+		observationStore:     obsStore,
 	}
 }
 
@@ -264,6 +268,17 @@ func (a *QueueingModelAnalyzer) computeAllVariantCapacities(
 	sloTarget *SLOTarget,
 ) []interfaces.VariantCapacity {
 	logger := ctrl.LoggerFrom(ctx)
+
+	// Update observation store with vertical scaling signals per variant.
+	// GpuMemoryUtilization is read from ReplicaMetrics (populated from deployment args).
+	for variantName, rms := range variantMetrics {
+		a.observationStore.UpdateFromReplicaMetrics(
+			namespace, modelID, variantName,
+			rms,
+			analyzerconstants.ComputeIntensityAlpha,
+			analyzerconstants.BytesPerKVToken,
+		)
+	}
 
 	// Build cost and accelerator lookup from input metrics
 	variantCost := make(map[string]float64)

@@ -59,7 +59,6 @@ func (r *VPAReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	return ctrl.Result{}, nil
 }
 
-
 // SetupWithManager registers VPAReconciler with the controller manager.
 func (r *VPAReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).

@@ -142,6 +142,33 @@ type ReplicaMetrics struct {
 	// Measures completed requests only; undercounts when requests queue in the scheduler.
 	// Zero when metrics are unavailable.
 	VLLMRequestRate float64
+
+	// --- Fields for Vertical Scaling ---
+
+	// GpuMemoryUtilization is the fraction of GPU memory reserved for the KV cache
+	// on this replica, sourced from the --gpu-memory-utilization vLLM flag.
+	// Populated from VLLMEngineParams parsed from the replica's parent Deployment args
+	// and propagated into ReplicaMetrics so both analyzers can use it without
+	// importing saturation_v2. Defaults to 0.9 (vLLM default) when unavailable.
+	// Used by UpdateFromReplicaMetrics when deriving MemoryWeight.
+	GpuMemoryUtilization float64
+
+	// PromptTokenRate is rate(vllm:prompt_tokens_total[Δt]) on this replica (tokens/s).
+	// Used to compute I_live = PromptTokenRate + α × GenerationTokenRate.
+	// Zero when metrics are unavailable.
+	PromptTokenRate float64
+
+	// DeltaCacheBytes is the KV cache bytes in use on this replica at collection time.
+	// Computed as KvCacheUsage × TotalKvCapacityTokens × BytesPerKVToken.
+	// Uses only vllm:kv_cache_usage_perc and vllm:cache_config_info — both documented
+	// simulator metrics. Zero when TotalKvCapacityTokens is unavailable.
+	// Used to derive BytePerToken = DeltaCacheBytes / DeltaTokens.
+	DeltaCacheBytes float64
+
+	// DeltaTokens is Δ(prompt_tokens_total + generation_tokens_total) over the last interval.
+	// Used to derive BytePerToken = DeltaCacheBytes / DeltaTokens.
+	// Zero when metrics are unavailable.
+	DeltaTokens float64
 }
 
 // ReplicaMetricsMetadata contains freshness information for replica metrics

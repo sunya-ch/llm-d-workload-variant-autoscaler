@@ -249,6 +249,7 @@ func readyVariantAutoscalings(ctx context.Context, k8sClient client.Client) ([]w
 // target the same scale target, the ScaledObject entry wins.
 func annotationSourcedVariants(ctx context.Context, k8sClient client.Client) ([]wvav1alpha1.VariantAutoscaling, error) {
 	logger := ctrl.LoggerFrom(ctx)
+
 	// keyed by namespace/kind/name for deduplication; ScaledObject entries overwrite HPA entries.
 	byTarget := make(map[string]wvav1alpha1.VariantAutoscaling)
 
@@ -317,7 +318,7 @@ func annotationSourcedVariants(ctx context.Context, k8sClient client.Client) ([]
 	var vpaList vpav1.VerticalPodAutoscalerList
 	if err := k8sClient.List(ctx, &vpaList); err != nil {
 		if apimeta.IsNoMatchError(err) {
-			logger.V(logging.DEBUG).Info("VPA CRD not available, skipping annotation discovery for VPAs")
+			logger.Info("VPA CRD not available, skipping annotation discovery for VPAs")
 		} else {
 			// Non-fatal: return what we have so far.
 			result := make([]wvav1alpha1.VariantAutoscaling, 0, len(byTarget))
@@ -329,18 +330,23 @@ func annotationSourcedVariants(ctx context.Context, k8sClient client.Client) ([]
 	} else {
 		for i := range vpaList.Items {
 			vpa := &vpaList.Items[i]
+			logger.Info("Processing VPA", "name", vpa.Name, "isManaged", annotations.IsManaged(vpa), "hasPrometheues", HasPrometheusRecommender(vpa))
 			if !annotations.IsManaged(vpa) || !vpa.DeletionTimestamp.IsZero() || !HasPrometheusRecommender(vpa) {
 				continue
 			}
 			vaFromVPA, err := VariantAutoscalingFromVPA(vpa)
 			if err != nil {
+				logger.Info("Skipping VPA with invalid WVA annotations",
+					"namespace", vpa.Namespace, "name", vpa.Name, "error", err)
+
 				logger.V(logging.DEBUG).Info("Skipping VPA with invalid WVA annotations",
 					"namespace", vpa.Namespace, "name", vpa.Name, "error", err)
 				continue
 			}
 			key := fmt.Sprintf("%s/%s/%s", vaFromVPA.Namespace,
 				vaFromVPA.Spec.ScaleTargetRef.Kind, vaFromVPA.Spec.ScaleTargetRef.Name)
-
+			logger.Info(fmt.Sprintf("%s/%s/%s", vaFromVPA.Namespace,
+				vaFromVPA.Spec.ScaleTargetRef.Kind, vaFromVPA.Spec.ScaleTargetRef.Name))
 			if existing, ok := byTarget[key]; ok {
 				// Merge: keep horizontal bounds from HPA/SO, add VPA's ResourceClaimPolicy.
 				existing.Spec.ResourceClaimPolicy = vaFromVPA.Spec.ResourceClaimPolicy

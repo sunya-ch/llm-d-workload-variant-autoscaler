@@ -41,6 +41,7 @@ import (
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/config"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/constants"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/discovery"
+	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/engines/analyzers/observationstore"
 	queueingmodel "github.com/llm-d/llm-d-workload-variant-autoscaler/internal/engines/analyzers/queueingmodel"
 	saturation_v2 "github.com/llm-d/llm-d-workload-variant-autoscaler/internal/engines/analyzers/saturation_v2"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/engines/common"
@@ -155,6 +156,10 @@ type Engine struct {
 	// capacityStore is shared with the V2 analyzer for caching capacity knowledge.
 	capacityStore *saturation_v2.CapacityKnowledgeStore
 
+	// observationStore holds vertical scaling signals (ComputeIntensity, MemoryWeight, etc.)
+	// shared between the sat V2 and QM analyzers. Created once at engine init.
+	observationStore *observationstore.VariantObservationStore
+
 	// analyzers is the engine's analyzer registry, mutated only during setup
 	// (NewEngine + RegisterAnalyzer). After StartOptimizeLoop it is frozen —
 	// further RegisterAnalyzer calls return an error. The optimize goroutine reads
@@ -208,7 +213,8 @@ func NewEngine(client client.Client, apiReader client.Reader, scheme *runtime.Sc
 	gpuLimiter := pipeline.NewDefaultLimiter("gpu-limiter", gpuInventory, gpuAlgorithm)
 
 	capacityStore := saturation_v2.NewCapacityKnowledgeStore()
-	satV2 := saturation_v2.NewSaturationAnalyzer(capacityStore)
+	obsStore := observationstore.NewVariantObservationStore()
+	satV2 := saturation_v2.NewSaturationAnalyzer(capacityStore, obsStore)
 
 	// Initialize with default optimizer. The actual optimizer is selected
 	// per-cycle in optimize() based on dynamic config (enableLimiter flag
@@ -232,8 +238,9 @@ func NewEngine(client client.Client, apiReader client.Reader, scheme *runtime.Sc
 		GPULimiter:              gpuLimiter,
 		metricsRegistry:         metricsRegistry,
 		saturationV2Analyzer:    satV2,
-		queueingModelAnalyzer:   queueingmodel.NewQueueingModelAnalyzer(),
+		queueingModelAnalyzer:   queueingmodel.NewQueueingModelAnalyzer(obsStore),
 		capacityStore:           capacityStore,
+		observationStore:        obsStore,
 		optimizer:               scalingOptimizer,
 		metricsEmitter:          metrics.NewMetricsEmitter(),
 		v1AnalyzerFactory:       defaultV1AnalyzerFactory,
@@ -329,6 +336,10 @@ func (e *Engine) recordDefaultConfigMetrics() {
 
 // optimize performs the optimization logic.
 func (e *Engine) optimize(ctx context.Context) (retErr error) {
+	// Evict stale observation entries for variants that have been deleted.
+	// Uses the same eviction timeout as the capacity store.
+	e.observationStore.EvictStale(saturation_v2.CapacityEvictionTimeout)
+
 	start := time.Now()
 	var modelsProcessed int
 	defer func() {

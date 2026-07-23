@@ -152,4 +152,50 @@ type VariantCapacity struct {
 
 	// Utilization is TotalDemand / TotalCapacity (0.0-1.0).
 	Utilization float64
+
+	// VerticalHint holds vertical scaling demand/supply signals for this variant.
+	// Non-nil only when a demand/supply imbalance exists AND the analyzer has
+	// sufficient empirical data. See VerticalHint for the exact nil conditions.
+	VerticalHint *VerticalHint
+}
+
+// VerticalHint holds the vertical scaling demand/supply signals for a variant.
+// Set only when a demand/supply imbalance exists:
+//   - scale-up:   demand > supply  (RequiredCapacity > 0 at model level)
+//   - scale-down: supply > demand + headroom (SpareCapacity > 0 at model level)
+//
+// Nil when supply and demand are balanced, the analyzer lacks empirical data
+// (MaxComputeIntensity == 0 for sat V2; LearnedParameters == nil for QM),
+// or no ready replicas are available.
+type VerticalHint struct {
+	// ScaleUpPerReplicaCapacity is the target per-replica capacity needed to
+	// absorb all demand with the current replica count (no horizontal spill).
+	// Sat V2: tokens (= totalDemand / readyCount).
+	// QM:     req/s (= queueAnalyzer.Size at tighter SLO).
+	ScaleUpPerReplicaCapacity float64
+
+	// ScaleDownPerReplicaCapacity is the minimum per-replica capacity that
+	// leaves zero spare capacity.
+	// Sat V2: tokens (= totalCapacity / readyCount).
+	// QM:     req/s (= queueAnalyzer.Size at looser SLO).
+	ScaleDownPerReplicaCapacity float64
+
+	// DemandPerReplicaResource is the Step-policy-rounded compute and memory
+	// resource targets needed to serve ScaleUpPerReplicaCapacity (scale-up) or
+	// ScaleDownPerReplicaCapacity (scale-down).
+	// Nil when the observation store is not yet bootstrapped
+	// (MaxComputeIntensity == 0 for sat V2; LearnedParameters == nil for QM).
+	DemandPerReplicaResource *ResourceRequirement
+}
+
+// ResourceRequirement holds the compute and memory resource targets for a vertical scaling step.
+type ResourceRequirement struct {
+	// ComputeFraction is the %Threads target after Step policy rounding (0.0–1.0).
+	// Sat V2: roundUp(ComputeIntensity / MaxComputeIntensity).
+	// QM:     roundUp(scaleUpRPS × (avgInputTokens + α×avgOutputTokens) / MaxComputeIntensity).
+	ComputeFraction float64
+	// MemoryBytes is the memory target in bytes after Step policy rounding.
+	// Sat V2: round(MemoryWeight + BytePerToken × ScaleUpPerReplicaCapacity).
+	// QM:     round(MemoryWeight + BytePerToken × (scaleUpRPS × (avgInputTokens + avgOutputTokens))).
+	MemoryBytes int64
 }

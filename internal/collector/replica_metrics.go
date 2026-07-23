@@ -59,6 +59,7 @@ import (
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/config"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/constants"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/controller/indexers"
+	analyzerconstants "github.com/llm-d/llm-d-workload-variant-autoscaler/internal/engines/analyzers"
 	saturation_v2 "github.com/llm-d/llm-d-workload-variant-autoscaler/internal/engines/analyzers/saturation_v2"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/interfaces"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/logging"
@@ -358,6 +359,9 @@ func (c *ReplicaMetricsCollector) collectReplicaMetrics(
 		registration.QueryGenerationTokenRate,
 		registration.QueryKvUsageInstant,
 		registration.QueryVLLMRequestRate,
+		// Vertical scaling queries
+		registration.QueryPromptTokenRate,
+		registration.QueryDeltaTokens,
 	}
 
 	// Execute the query with timing
@@ -412,6 +416,9 @@ func (c *ReplicaMetricsCollector) collectReplicaMetrics(
 		generationTokenRate float64
 		kvUsageInstant      float64
 		vllmRequestRate     float64
+		// Vertical scaling fields
+		promptTokenRate float64
+		deltaTokens     float64
 	}
 
 	// trackMetricFreshness determines the freshness status of metrics in podMetricData
@@ -790,14 +797,56 @@ func (c *ReplicaMetricsCollector) collectReplicaMetrics(
 		}
 	}
 
-	// Pre-compute MaxBatchSize per scale target from container args.
-	// MaxBatchSize (--max-num-seqs) is not a Prometheus metric; it is parsed
-	// from the Deployment/LWS spec using the vLLM argument parser.
+	// Process prompt token rate (tokens/s) — vertical scaling I_live (PromptTokenRate)
+	if result := results[registration.QueryPromptTokenRate]; result != nil {
+		if !result.HasError() {
+			for _, value := range result.Values {
+				instanceKey, _, _ := c.buildInstanceKey(ctx, namespace, value.Labels)
+				if instanceKey == "" {
+					continue
+				}
+				if podData[instanceKey] == nil {
+					continue
+				}
+				if !math.IsNaN(value.Value) && !math.IsInf(value.Value, 0) && value.Value >= 0 {
+					podData[instanceKey].promptTokenRate = value.Value
+				}
+			}
+		}
+	}
+
+	// Process delta total tokens (tokens/s) — vertical scaling BytePerToken (DeltaTokens)
+	if result := results[registration.QueryDeltaTokens]; result != nil {
+		if !result.HasError() {
+			for _, value := range result.Values {
+				instanceKey, _, _ := c.buildInstanceKey(ctx, namespace, value.Labels)
+				if instanceKey == "" {
+					continue
+				}
+				if podData[instanceKey] == nil {
+					continue
+				}
+				if !math.IsNaN(value.Value) && !math.IsInf(value.Value, 0) && value.Value >= 0 {
+					podData[instanceKey].deltaTokens = value.Value
+				}
+			}
+		}
+	}
+
+	// Pre-compute per-scale-target fields from vLLM deployment args.
+	// These are not Prometheus metrics — they are parsed from the Deployment/LWS spec.
 	// Map key is scale target key (namespace/name).
-	scaleTargetMaxBatchSize := make(map[string]int64, len(scaleTargets))
+	type scaleTargetVLLMFields struct {
+		maxBatchSize         int64
+		gpuMemoryUtilization float64
+	}
+	scaleTargetFields := make(map[string]scaleTargetVLLMFields, len(scaleTargets))
 	for key, scaleTarget := range scaleTargets {
 		params := saturation_v2.ParseVLLMArgs(scaleTarget)
-		scaleTargetMaxBatchSize[key] = params.MaxNumSeqs
+		scaleTargetFields[key] = scaleTargetVLLMFields{
+			maxBatchSize:         params.MaxNumSeqs,
+			gpuMemoryUtilization: params.GpuMemoryUtilization,
+		}
 	}
 
 	// Track metrics freshness status per pod
@@ -904,12 +953,14 @@ func (c *ReplicaMetricsCollector) collectReplicaMetrics(
 			tokensInUse = int64(rounded)
 		}
 
-		// Look up MaxBatchSize from the scale target's vLLM args via the VA's ScaleTargetRef
+		// Look up MaxBatchSize and GpuMemoryUtilization from vLLM deployment args.
 		var maxBatchSize int64
+		var gpuMemoryUtilization float64
 		if va, ok := variantAutoscalings[variantKey]; ok && va != nil {
 			key := utils.GetNamespacedKey(namespace, va.Spec.ScaleTargetRef.Name)
-			if mbs, ok := scaleTargetMaxBatchSize[key]; ok {
-				maxBatchSize = mbs
+			if fields, ok := scaleTargetFields[key]; ok {
+				maxBatchSize = fields.maxBatchSize
+				gpuMemoryUtilization = fields.gpuMemoryUtilization
 			}
 		}
 
@@ -940,6 +991,14 @@ func (c *ReplicaMetricsCollector) collectReplicaMetrics(
 			GenerationTokenRate:   data.generationTokenRate,
 			KvUsageInstant:        data.kvUsageInstant,
 			VLLMRequestRate:       data.vllmRequestRate,
+			// Vertical scaling fields
+			// DeltaCacheBytes: KvCacheUsage × TotalKvCapacityTokens × BytesPerKVToken.
+			// Uses only vllm:kv_cache_usage_perc and vllm:cache_config_info — both
+			// documented simulator metrics. Zero when cache config is unavailable.
+			GpuMemoryUtilization: gpuMemoryUtilization,
+			PromptTokenRate:      data.promptTokenRate,
+			DeltaCacheBytes:      data.kvUsage * float64(totalKvCapacityTokens) * analyzerconstants.BytesPerKVToken,
+			DeltaTokens:          data.deltaTokens,
 			Metadata: &interfaces.ReplicaMetricsMetadata{
 				CollectedAt:     collectedAt,
 				Age:             0, // Fresh

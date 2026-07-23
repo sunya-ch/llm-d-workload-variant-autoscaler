@@ -7,6 +7,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/config"
+	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/engines/analyzers/observationstore"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/interfaces"
 )
 
@@ -19,7 +20,7 @@ var _ = Describe("SaturationAnalyzer", func() {
 
 	BeforeEach(func() {
 		store = NewCapacityKnowledgeStore()
-		analyzer = NewSaturationAnalyzer(store)
+		analyzer = NewSaturationAnalyzer(store, observationstore.NewVariantObservationStore())
 		ctx = context.Background()
 	})
 
@@ -563,7 +564,7 @@ var _ = Describe("SaturationAnalyzer", func() {
 			// Without scheduler queue
 			input.SchedulerQueue = nil
 			// Reset analyzer for clean comparison
-			analyzer2 := NewSaturationAnalyzer(store)
+			analyzer2 := NewSaturationAnalyzer(store, observationstore.NewVariantObservationStore())
 			resultWithout, err := analyzer2.Analyze(ctx, input)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -790,7 +791,7 @@ var _ = Describe("SaturationAnalyzer", func() {
 			}
 
 			store := NewCapacityKnowledgeStore()
-			a := NewSaturationAnalyzer(store)
+			a := NewSaturationAnalyzer(store, observationstore.NewVariantObservationStore())
 			result, err := a.Analyze(ctx, input)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RoleCapacities).NotTo(BeNil())
@@ -895,7 +896,7 @@ var _ = Describe("aggregateByRole", func() {
 
 	BeforeEach(func() {
 		store := NewCapacityKnowledgeStore()
-		analyzer = NewSaturationAnalyzer(store)
+		analyzer = NewSaturationAnalyzer(store, observationstore.NewVariantObservationStore())
 	})
 
 	It("should return nil when all variants are role 'both'", func() {
@@ -994,7 +995,7 @@ var _ = Describe("computeReplicaCapacityFallback", func() {
 
 	BeforeEach(func() {
 		store = NewCapacityKnowledgeStore()
-		analyzer = NewSaturationAnalyzer(store)
+		analyzer = NewSaturationAnalyzer(store, observationstore.NewVariantObservationStore())
 		cfg = &config.SaturationScalingConfig{
 			KvCacheThreshold:     0.8,
 			QueueLengthThreshold: 5,
@@ -1201,7 +1202,7 @@ var _ = Describe("Analyze with fallback (no cache_config_info)", func() {
 
 	BeforeEach(func() {
 		store = NewCapacityKnowledgeStore()
-		analyzer = NewSaturationAnalyzer(store)
+		analyzer = NewSaturationAnalyzer(store, observationstore.NewVariantObservationStore())
 		ctx = context.Background()
 	})
 
@@ -1369,7 +1370,7 @@ var _ = Describe("aggregateByVariant capacity Reason", func() {
 			EffectiveCapacity: 50000,
 			LearnedFrom:       learnedFromLive,
 		})
-		a := NewSaturationAnalyzer(store)
+		a := NewSaturationAnalyzer(store, observationstore.NewVariantObservationStore())
 
 		input := interfaces.AnalyzerInput{
 			ModelID:   "m",
@@ -1389,7 +1390,7 @@ var _ = Describe("aggregateByVariant capacity Reason", func() {
 
 	It("sets Reason to no-data when variant has zero replicas and no store or compatible record", func() {
 		store := NewCapacityKnowledgeStore()
-		a := NewSaturationAnalyzer(store)
+		a := NewSaturationAnalyzer(store, observationstore.NewVariantObservationStore())
 
 		input := interfaces.AnalyzerInput{
 			ModelID:        "m",

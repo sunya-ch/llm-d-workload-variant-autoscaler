@@ -173,7 +173,7 @@ func (r *VariantAutoscalingReconciler) Reconcile(ctx context.Context, req ctrl.R
 		if r.Recorder != nil {
 			r.Recorder.Event(&va, corev1.EventTypeWarning, "Deprecated",
 				"VariantAutoscaling is deprecated and will be removed in a future release. "+
-					"Migrate to the annotation-based path (add llm-d.ai/managed=true to your HPA or ScaledObject). "+
+					"Migrate to the annotation-based path (add llm-d.ai/managed=true to your HPA or ScaledObject or VPA). "+
 					"See docs/developer-guide/migrating-from-va-crd.md.")
 		}
 		originalVA = va.DeepCopy()

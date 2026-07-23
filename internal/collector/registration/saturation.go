@@ -16,6 +16,10 @@ const (
 	QueryAvgInputTokens     = "avg_input_tokens"
 	QueryPrefixCacheHitRate = "prefix_cache_hit_rate"
 
+	// Vertical scaling queries (per-pod, used by VariantObservationStore)
+	QueryPromptTokenRate = "prompt_token_rate"
+	QueryDeltaTokens     = "delta_tokens"
+
 	// Scheduler flow control queries (model-level, from inference scheduler)
 	QuerySchedulerQueueSize  = "scheduler_queue_size"
 	QuerySchedulerQueueBytes = "scheduler_queue_bytes"
@@ -114,6 +118,29 @@ func RegisterSaturationQueries(sourceRegistry *source.SourceRegistry) {
 	// different namespaces, these queries will aggregate across all of them.
 	// Once the upstream adds a namespace label, these queries should filter by it.
 
+	// --- Vertical scaling queries ---
+
+	// Prompt token rate per instance (tokens/s) — PromptTokenRate for I_live computation.
+	// rate() over 1m gives a per-second token throughput aligned with the scrape window.
+	registry.MustRegister(source.QueryTemplate{
+		Name:        QueryPromptTokenRate,
+		Type:        source.QueryTypePromQL,
+		Template:    `max by (instance, pod, llm_d_ai_variant) (rate(vllm:prompt_tokens_total{namespace="{{.namespace}}",model_name="{{.modelID}}"}[1m]))`,
+		Params:      []string{source.ParamNamespace, source.ParamModelID},
+		Description: "Prompt token throughput per instance (tokens/s, 1m rate) for vertical scaling I_live",
+	})
+
+	// Delta total tokens per instance over 1m — DeltaTokens for BytePerToken derivation.
+	// Sum of prompt and generation token rates gives total active token throughput (tokens/s).
+	registry.MustRegister(source.QueryTemplate{
+		Name:        QueryDeltaTokens,
+		Type:        source.QueryTypePromQL,
+		Template:    `max by (instance, pod, llm_d_ai_variant) (rate(vllm:prompt_tokens_total{namespace="{{.namespace}}",model_name="{{.modelID}}"}[1m]) + rate(vllm:generation_tokens_total{namespace="{{.namespace}}",model_name="{{.modelID}}"}[1m]))`,
+		Params:      []string{source.ParamNamespace, source.ParamModelID},
+		Description: "Total token throughput per instance (tokens/s, 1m rate) for BytePerToken derivation",
+	})
+
+	// --- Scheduler flow control queries (model-level) ---
 	// Number of requests queued in the scheduler's flow control layer
 	registry.MustRegister(source.QueryTemplate{
 		Name: QuerySchedulerQueueSize,
