@@ -120,31 +120,23 @@ type VerticalHint struct {
     // QM:     req/s (= queueAnalyzer.Size at looser SLO).
     ScaleDownPerReplicaCapacity float64
 
-    // ComputeDemand is the estimated compute requirement as a %Threads fraction (0.0–1.0).
-    // Sat V2: medianComputeIntensity / medianMaxComputeIntensity.
-    // QM:     scaleUpRPS × (avgInputTokens + α×avgOutputTokens) / MaxComputeIntensity.
-    // Zero when MaxComputeIntensity is not yet available.
-    ComputeDemand float64
-
-    // MemoryDemand is the estimated memory requirement in bytes.
-    // Sat V2: MemoryWeight + BytePerToken × ScaleUpPerReplicaCapacity.
-    // QM:     MemoryWeight + BytePerToken × (scaleUpRPS × (avgInputTokens + avgOutputTokens)).
-    // Zero when MemoryWeight / BytePerToken are not yet available.
-    MemoryDemand float64
-
-    // DemandPerReplicaResource is the estimated resource requirement to achieve
-    // ScaleUpPerReplicaCapacity (when ScaleUp) or ScaleDownPerReplicaCapacity (when ScaleDown).
-    // Derived by applying the Step range policy to ComputeDemand and MemoryDemand, then
-    // computing the target capacity inversely from the rounded resource values.
-    // Nil when ComputeDemand == 0 and MemoryDemand == 0 (observation store not ready).
+    // DemandPerReplicaResource is the Step-policy-rounded compute and memory
+    // resource targets needed to serve ScaleUpPerReplicaCapacity (scale-up) or
+    // ScaleDownPerReplicaCapacity (scale-down).
+    // Nil when the observation store is not yet bootstrapped
+    // (MaxComputeIntensity == 0 for sat V2; LearnedParameters == nil for QM).
     DemandPerReplicaResource *ResourceRequirement
 }
 
 // ResourceRequirement holds the compute and memory resource targets for a vertical scaling step.
 type ResourceRequirement struct {
     // ComputeFraction is the %Threads target after Step policy rounding (0.0–1.0).
+    // Sat V2: roundUp(ComputeIntensity / MaxComputeIntensity).
+    // QM:     roundUp(scaleUpRPS × (avgInputTokens + α×avgOutputTokens) / MaxComputeIntensity).
     ComputeFraction float64
     // MemoryBytes is the memory target in bytes after Step policy rounding.
+    // Sat V2: round(MemoryWeight + BytePerToken × ScaleUpPerReplicaCapacity).
+    // QM:     round(MemoryWeight + BytePerToken × (scaleUpRPS × (avgInputTokens + avgOutputTokens))).
     MemoryBytes int64
 }
 ```
@@ -166,15 +158,16 @@ type VariantCapacity struct {
 
 - `VerticalHint` and `ResourceRequirement` structs added to [`internal/interfaces/analyzer.go`](../../../internal/interfaces/analyzer.go).
 - `VerticalHint *VerticalHint` field appended to `VariantCapacity`.
+- No raw `ComputeDemand`/`MemoryDemand` fields on `VerticalHint` — pre-rounding intermediates stay inside `computeVerticalHint` and are not exposed on the struct.
 - No other code changes in this sub-task.
 
 #### Todo List — Sub-Task 1
 
-1. Add `VerticalHint` struct (with `DemandPerReplicaResource *ResourceRequirement`) to [`internal/interfaces/analyzer.go`](../../../internal/interfaces/analyzer.go) after line 155.
+1. Add `VerticalHint` struct (3 fields: `ScaleUpPerReplicaCapacity`, `ScaleDownPerReplicaCapacity`, `DemandPerReplicaResource *ResourceRequirement`) to [`internal/interfaces/analyzer.go`](../../../internal/interfaces/analyzer.go) after line 155.
 2. Add `ResourceRequirement` struct to the same file.
 3. Add `VerticalHint *VerticalHint` field to `VariantCapacity`.
 
-**Status** — `[ ] pending`
+**Status** — `[x] complete`
 
 ---
 
@@ -324,10 +317,11 @@ Append after `VLLMRequestRate` (line 144), before the closing `}`:
 // Zero when metrics are unavailable.
 PromptTokenRate float64
 
-// DeltaCacheBytes is ΔCacheBytesUsed over the last collection interval.
-// Computed as Δ(vllm:gpu_cache_usage_perc × vllm:available_kv_cache_memory_bytes).
+// DeltaCacheBytes is the KV cache bytes in use on this replica at collection time.
+// Computed as KvCacheUsage × TotalKvCapacityTokens × BytesPerKVToken.
+// Uses only vllm:kv_cache_usage_perc and vllm:cache_config_info — both documented
+// simulator metrics. Zero when TotalKvCapacityTokens is unavailable.
 // Used to derive BytePerToken = DeltaCacheBytes / DeltaTokens.
-// Zero when metrics are unavailable.
 DeltaCacheBytes float64
 
 // DeltaTokens is Δ(prompt_tokens_total + generation_tokens_total) over the last interval.
@@ -481,7 +475,7 @@ func NewQueueingModelAnalyzer(obsStore *observationstore.VariantObservationStore
 9. Update metric collector to populate `PromptTokenRate`, `DeltaCacheBytes`, `DeltaTokens`.
 10. Unit tests for `VariantObservationStore` and both write paths.
 
-**Status** — `[ ] pending (blocked on Sub-Task 1)`
+**Status** — `[x] complete`
 
 ---
 
@@ -494,9 +488,9 @@ Use the accumulated signals from Sub-Task 2a to compute `VerticalHint` for each 
 The computation follows these steps from [`vertical-scaling-logic.md`](./vertical-scaling-logic.md):
 
 1. **Determine `VerticalScaleOption`**: set when `Demand > Supply` (scale-up) or `Demand < Supply − headroom` (scale-down). If false, return nil.
-2. **Compute `ComputeDemand`**: `ComputeIntensity / MaxComputeIntensity` where `ComputeIntensity` targets the expected token rate at `ScaleTargetPerReplica`. Clamped to `[0, 1]`.
-3. **Compute `MemoryDemand`**: `MemoryWeight + BytePerToken × ScaleTargetPerReplica` (bytes).
-4. **Apply Step range policy**: round up `ComputeDemand` and round `MemoryDemand` to the nearest step boundary defined by the VPA resource policy. Check that both values are within `[minAllowed, maxAllowed]`; if out of range, return nil.
+2. **Compute raw `computeDemand`** (local variable): `ComputeIntensity / MaxComputeIntensity` at `ScaleTargetPerReplica`. Clamped to `[0, 1]`.
+3. **Compute raw `memoryDemand`** (local variable): `MemoryWeight + BytePerToken × ScaleTargetPerReplica` (bytes).
+4. **Apply Step range policy**: round up `computeDemand` and round `memoryDemand` to the nearest step boundary defined by the VPA resource policy. Check that both values are within `[minAllowed, maxAllowed]`; if out of range, return nil.
 5. **Compute `ScaleTargetPerReplica` inversely** from the rounded resource values — ensuring the emitted PRC is consistent with the resource amount the optimizer will actually request.
 6. **Set `ScaleUpPerReplicaCapacity`** (when `ScaleUp == true`) or **`ScaleDownPerReplicaCapacity`** (when the target is still below current PRC).
 
@@ -537,7 +531,7 @@ func computeVerticalHint(
         targetPRC = scaleDownPRC
     }
 
-    // ComputeDemand: I_live / I_max at the target token rate.
+    // Compute raw demands (local intermediates — not stored on the hint).
     computeDemand := 0.0
     if obs.MaxComputeIntensity > 0 {
         computeDemand = obs.ComputeIntensity / obs.MaxComputeIntensity
@@ -552,7 +546,7 @@ func computeVerticalHint(
     }
     memoryDemand := obs.MemoryWeight + bpt*targetPRC
 
-    // Apply Step range policy: round up ComputeDemand and MemoryDemand to the
+    // Apply Step range policy: round up computeDemand and memoryDemand to the
     // nearest step boundary, then check they are within [minAllowed, maxAllowed].
     // Return nil when either value is outside the allowed range.
     roundedCompute, roundedMemory, ok := applyStepPolicy(computeDemand, memoryDemand, policy)
@@ -570,8 +564,6 @@ func computeVerticalHint(
     }
 
     hint := &interfaces.VerticalHint{
-        ComputeDemand: roundedCompute,
-        MemoryDemand:  float64(roundedMemory),
         DemandPerReplicaResource: &interfaces.ResourceRequirement{
             ComputeFraction: roundedCompute,
             MemoryBytes:     roundedMemory,
@@ -608,10 +600,10 @@ result = append(result, interfaces.VariantCapacity{
 - `computeVerticalHint` helper (+ `applyStepPolicy`, `inversePRC`) added to [`saturation_v2/analyzer.go`](../../../internal/engines/analyzers/saturation_v2/analyzer.go).
 - Called in `aggregateByVariant` live-replicas branch only.
 - Nil when `obs == nil`, `MaxComputeIntensity == 0`, `readyCount == 0`, balanced demand/supply, or resource values outside VPA allowed range after Step policy.
-- `ComputeDemand` and `MemoryDemand` are rounded to Step policy boundaries before being stored in the hint.
-- `DemandPerReplicaResource` populated with rounded compute fraction and memory bytes whenever the hint is non-nil.
+- Raw `computeDemand`/`memoryDemand` are local variables only — not stored on `VerticalHint`.
+- `DemandPerReplicaResource` populated with rounded `ComputeFraction` and `MemoryBytes` whenever the hint is non-nil.
 - `ScaleTargetPerReplica` derived inversely from rounded resource values; set on `ScaleUpPerReplicaCapacity` (scale-up) or `ScaleDownPerReplicaCapacity` (scale-down, only when target < current PRC).
-- Unit tests: hint set when demand > capacity with Step rounding; hint set when capacity > demand (scale-down room); nil when balanced; nil when obs nil; nil when not bootstrapped; nil when resource values out of VPA range; `ComputeDemand` zero when `MaxComputeIntensity == 0`.
+- Unit tests: hint set when demand > capacity with Step rounding; hint set when capacity > demand (scale-down room); nil when balanced; nil when obs nil; nil when not bootstrapped; nil when resource values out of VPA range; `DemandPerReplicaResource` nil when `MaxComputeIntensity == 0`.
 
 #### Todo List — Sub-Task 2b
 
@@ -660,30 +652,34 @@ if rc > 0 || sc > 0 {
     }
 
     if scaleUpRPS > 0 || scaleDownRPS > 0 {
+        // Build DemandPerReplicaResource from obs store when available.
+        // Nil when obs store not yet bootstrapped — optimizer still acts on RPS targets.
         obs := a.observationStore.Get(namespace, modelID, variantName)
         I := wm.avgInputTokens
         O := wm.avgOutputTokens
 
-        var memoryDemand, computeDemand float64
+        var demand *interfaces.ResourceRequirement
         if obs != nil {
             bpt := obs.BytePerToken
             if bpt == 0 {
                 bpt = analyzerconstants.BytesPerKVToken
             }
-            memoryDemand = obs.MemoryWeight + bpt*(scaleUpRPS*(I+O))
+            memoryDemand := obs.MemoryWeight + bpt*(scaleUpRPS*(I+O))
+            var computeFraction float64
             if obs.MaxComputeIntensity > 0 {
                 iTarget := scaleUpRPS * (I + analyzerconstants.ComputeIntensityAlpha*O)
-                computeDemand = iTarget / obs.MaxComputeIntensity
+                computeFraction = iTarget / obs.MaxComputeIntensity
+            }
+            demand = &interfaces.ResourceRequirement{
+                ComputeFraction: computeFraction,
+                MemoryBytes:     int64(memoryDemand),
             }
         }
-        // obs == nil: demands remain zero; VerticalHint still set so optimizer
-        // can act on the RPS targets; demand fields are for the recommender only.
 
         variantCapacity.VerticalHint = &interfaces.VerticalHint{
             ScaleUpPerReplicaCapacity:   scaleUpRPS,
             ScaleDownPerReplicaCapacity: scaleDownRPS,
-            ComputeDemand:               computeDemand,
-            MemoryDemand:                memoryDemand,
+            DemandPerReplicaResource:    demand,
         }
     }
 }
@@ -767,9 +763,9 @@ ScaleDownSLOFactor: qmConfig.ScaleDownSLOFactor,
 - `DefaultScaleUpSLOFactor = 0.75` and `DefaultScaleDownSLOFactor = 2.0` added to `defaults.go`.
 - `computeAllVariantCapacities` signature gains `config *QMConfig`.
 - `VerticalHint` populated when `rc > 0 || sc > 0` and at least one `Size` call succeeds.
-- `ComputeDemand` and `MemoryDemand` are zero when `obs == nil` (sat V2 hasn't written yet).
+- `DemandPerReplicaResource` is nil when `obs == nil` (sat V2 hasn't written yet) — hint still set so optimizer can act on RPS targets.
 - Nil `VerticalHint` when supply equals demand exactly (`rc == 0 && sc == 0`).
-- Unit tests: hint set when RC > 0 with obs; hint set with zero demands when obs nil; nil when RC == SC == 0; nil when params missing.
+- Unit tests: hint set when RC > 0 with obs (non-nil `DemandPerReplicaResource`); hint set with nil `DemandPerReplicaResource` when obs nil; nil when RC == SC == 0; nil when params missing.
 
 #### Todo List — Sub-Task 3
 
@@ -830,7 +826,7 @@ ScaleUpWork:
   for each variant where VerticalScalingEnabled && VerticalHint != nil:
     if VerticalHint.ScaleUpPerReplicaCapacity > vc.PerReplicaCapacity:
       // growing per-replica capacity reduces required horizontal replicas
-      → verticalTargets[name] = {ScaleUpPerReplicaCapacity, ComputeDemand, MemoryDemand, VerticalScaleUp}
+      → verticalTargets[name] = {ScaleUpPerReplicaCapacity, DemandPerReplicaResource, VerticalScaleUp}
       → patch vc.PerReplicaCapacity = ScaleUpPerReplicaCapacity (working copy only)
       // higher prc → allocateForModelPaired requests fewer horizontal replicas
 
@@ -841,7 +837,7 @@ ScaleDownIterate:
   for each variant where VerticalScalingEnabled && VerticalHint != nil:
     if VerticalHint.ScaleDownPerReplicaCapacity < vc.PerReplicaCapacity AND
        targets[name] already == *state.MinReplicas (horizontal exhausted):
-      → verticalTargets[name] = {ScaleDownPerReplicaCapacity, ComputeDemand, MemoryDemand, VerticalScaleDown}
+      → verticalTargets[name] = {ScaleDownPerReplicaCapacity, DemandPerReplicaResource, VerticalScaleDown}
 
 nil VerticalHint or !VerticalScalingEnabled:
   → skip vertical step entirely; horizontal-only path unchanged
@@ -865,14 +861,10 @@ TargetPerReplicaCapacity float64
 // Zero when VerticalAction == VerticalNoChange.
 CurrentPerReplicaCapacity float64
 
-// ComputeDemand is the compute resource requirement for the vertical action
-// as a fraction (0.0–1.0) of the GPU's observed compute wall.
-// Zero when VerticalAction == VerticalNoChange or observation store not ready.
-ComputeDemand float64
-
-// MemoryDemand is the memory resource requirement in bytes for the vertical action.
-// Zero when VerticalAction == VerticalNoChange or observation store not ready.
-MemoryDemand float64
+// DemandPerReplicaResource is the Step-policy-rounded resource target for this
+// vertical action. Nil when VerticalAction == VerticalNoChange or the observation
+// store was not yet bootstrapped when the hint was produced.
+DemandPerReplicaResource *interfaces.ResourceRequirement
 ```
 
 **New type** (add before `VariantDecision` in the same file):
@@ -897,10 +889,9 @@ import "github.com/llm-d/llm-d-workload-variant-autoscaler/internal/interfaces"
 
 // verticalTarget records the vertical scaling intent for one variant.
 type verticalTarget struct {
-    TargetPRC     float64                        // ScaleUp or ScaleDown per-replica capacity
-    ComputeDemand float64                        // from VerticalHint
-    MemoryDemand  float64                        // from VerticalHint
-    Action        interfaces.VerticalScalingAction
+    TargetPRC               float64                             // ScaleUp or ScaleDown per-replica capacity
+    DemandPerReplicaResource *interfaces.ResourceRequirement   // nil when obs store not ready
+    Action                  interfaces.VerticalScalingAction
 }
 
 // applyVerticalScaleUp iterates variants, records ScaleUpPerReplicaCapacity in
@@ -922,10 +913,9 @@ func applyVerticalScaleUp(
             continue
         }
         verticalTargets[vc.VariantName] = verticalTarget{
-            TargetPRC:     hint.ScaleUpPerReplicaCapacity,
-            ComputeDemand: hint.ComputeDemand,
-            MemoryDemand:  hint.MemoryDemand,
-            Action:        interfaces.VerticalScaleUp,
+            TargetPRC:                hint.ScaleUpPerReplicaCapacity,
+            DemandPerReplicaResource: hint.DemandPerReplicaResource,
+            Action:                   interfaces.VerticalScaleUp,
         }
         // Patch working copy so allocateForModelPaired sees the higher PRC.
         variants[i].PerReplicaCapacity = hint.ScaleUpPerReplicaCapacity
@@ -956,10 +946,9 @@ func applyVerticalScaleDown(
             continue
         }
         verticalTargets[vc.VariantName] = verticalTarget{
-            TargetPRC:     hint.ScaleDownPerReplicaCapacity,
-            ComputeDemand: hint.ComputeDemand,
-            MemoryDemand:  hint.MemoryDemand,
-            Action:        interfaces.VerticalScaleDown,
+            TargetPRC:                hint.ScaleDownPerReplicaCapacity,
+            DemandPerReplicaResource: hint.DemandPerReplicaResource,
+            Action:                   interfaces.VerticalScaleDown,
         }
     }
 }
@@ -998,11 +987,10 @@ decision := interfaces.VariantDecision{
 }
 
 if vt, ok := verticalTargets[name]; ok {
-    decision.VerticalAction            = vt.Action
-    decision.TargetPerReplicaCapacity  = vt.TargetPRC
-    decision.CurrentPerReplicaCapacity = currentPRC
-    decision.ComputeDemand             = vt.ComputeDemand
-    decision.MemoryDemand              = vt.MemoryDemand
+    decision.VerticalAction              = vt.Action
+    decision.TargetPerReplicaCapacity    = vt.TargetPRC
+    decision.CurrentPerReplicaCapacity   = currentPRC
+    decision.DemandPerReplicaResource    = vt.DemandPerReplicaResource
 }
 ```
 
@@ -1011,7 +999,7 @@ Key: `vcMap` is built by `buildCapacityMap(satEntry.VariantCapacities)` **before
 #### Expected Outcomes — Sub-Task 5
 
 - `VerticalScalingAction` type + constants added to [`saturation_analyzer.go`](../../../internal/interfaces/saturation_analyzer.go).
-- `VariantDecision` gains five new fields.
+- `VariantDecision` gains four new fields (`VerticalAction`, `TargetPerReplicaCapacity`, `CurrentPerReplicaCapacity`, `DemandPerReplicaResource`).
 - [`vertical_helpers.go`](../../../internal/engines/pipeline/vertical_helpers.go) with `verticalTarget` type, `applyVerticalScaleUp`, `applyVerticalScaleDown`.
 - Both optimizers initialise `verticalTargets` and call helpers; pass to `buildDecisionsWithOptimizer`.
 - `buildDecisionsWithOptimizer` signature gains `verticalTargets`; populates vertical fields from it.
@@ -1021,7 +1009,7 @@ Key: `vcMap` is built by `buildCapacityMap(satEntry.VariantCapacities)` **before
 #### Todo List — Sub-Task 5
 
 1. Add `VerticalScalingAction` type + constants to [`interfaces/saturation_analyzer.go`](../../../internal/interfaces/saturation_analyzer.go).
-2. Add `VerticalAction`, `TargetPerReplicaCapacity`, `CurrentPerReplicaCapacity`, `ComputeDemand`, `MemoryDemand` to `VariantDecision`.
+2. Add `VerticalAction`, `TargetPerReplicaCapacity`, `CurrentPerReplicaCapacity`, `DemandPerReplicaResource` to `VariantDecision`.
 3. Create [`internal/engines/pipeline/vertical_helpers.go`](../../../internal/engines/pipeline/vertical_helpers.go) with `verticalTarget` type, `applyVerticalScaleUp`, `applyVerticalScaleDown`.
 4. Update `CostAwareOptimizer.Optimize` in [`cost_aware_optimizer.go`](../../../internal/engines/pipeline/cost_aware_optimizer.go).
 5. Update `GreedyByScoreOptimizer` similarly.
