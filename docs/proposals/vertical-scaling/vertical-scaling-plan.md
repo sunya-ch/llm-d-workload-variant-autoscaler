@@ -652,14 +652,14 @@ if rc > 0 || sc > 0 {
     }
 
     if scaleUpRPS > 0 || scaleDownRPS > 0 {
-        // Build DemandPerReplicaResource from obs store when available.
-        // Nil when obs store not yet bootstrapped — optimizer still acts on RPS targets.
         obs := a.observationStore.Get(namespace, modelID, variantName)
         I := wm.avgInputTokens
         O := wm.avgOutputTokens
 
         var demand *interfaces.ResourceRequirement
-        if obs != nil {
+        // Bootstrapped = MemoryWeight > 0 (cache config seen) or MaxComputeIntensity > 0
+        // (saturated tick seen). Nil when neither has been observed yet.
+        if obs != nil && (obs.MemoryWeight > 0 || obs.MaxComputeIntensity > 0) {
             bpt := obs.BytePerToken
             if bpt == 0 {
                 bpt = analyzerconstants.BytesPerKVToken
@@ -778,7 +778,7 @@ ScaleDownSLOFactor: qmConfig.ScaleDownSLOFactor,
 7. Add the two extra `Size` calls, observation store lookup, demand derivation, and `VerticalHint` population.
 8. Unit tests in [`queueingmodel/analyzer_test.go`](../../../internal/engines/analyzers/queueingmodel/analyzer_test.go) (file does not exist yet — create it).
 
-**Status** — `[ ] pending (blocked on Sub-Task 1)`
+**Status** — `[x] complete`
 
 ---
 
@@ -809,7 +809,7 @@ Gate vertical scaling per variant via `ResourceClaimPolicy != nil` in the WVA sp
 2. Update [`BuildVariantStates`](../../../internal/engines/saturation/engine.go) to set `VerticalScalingEnabled = va.Spec.ResourceClaimPolicy != nil`.
 3. Unit tests for the flag.
 
-**Status** — `[~] in progress — infrastructure complete; VerticalScalingEnabled flag pending`
+**Status** — `[x] complete`
 
 ---
 
@@ -1017,7 +1017,7 @@ Key: `vcMap` is built by `buildCapacityMap(satEntry.VariantCapacities)` **before
 7. Add [`internal/engines/pipeline/vertical_helpers_test.go`](../../../internal/engines/pipeline/vertical_helpers_test.go).
 8. Add vertical scenarios to `cost_aware_optimizer_test.go`.
 
-**Status** — `[ ] pending (blocked on Sub-Tasks 1, 2b, 3, 4)`
+**Status** — `[x] complete — vertical helpers + VerticalScalingAction type + VariantDecision fields done; CostAwareOptimizer/GreedyByScore unchanged (vertical path in MultiDimensionalOptimizer only)`
 
 ---
 
@@ -1179,7 +1179,7 @@ Sub-Task 5's `applyVerticalScaleUp` and `applyVerticalScaleDown` are now **only 
 6. Unit tests in [`multi_dimensional_optimizer_test.go`](../../../internal/engines/pipeline/multi_dimensional_optimizer_test.go).
 7. Unit tests in [`dra_inventory_test.go`](../../../internal/discovery/dra_inventory_test.go).
 
-**Status** — `[ ] pending (blocked on Sub-Task 5)`
+**Status** — `[x] complete — CheckDRACRD, ResourceCapacityInventory, MultiDimensionalOptimizer, engine wiring (rcInventory field + SetDRAInventory); selectV2Optimizer unchanged`
 
 ---
 
@@ -1202,7 +1202,7 @@ Expose vertical scaling signals through Prometheus, identically for both analyze
 4. Call `RecordVerticalScalingMetrics` in `applySaturationDecisions` when `VerticalAction != VerticalNoChange`.
 5. Unit tests.
 
-**Status** — `[ ] pending (blocked on Sub-Task 5)`
+**Status** — `[x] complete — WVAVariantTargetCapacityPerGPU + WVAVerticalScalingTotal constants, gauge+counter vars, InitMetrics registration, RecordVerticalScalingMetrics method, call site in applySaturationDecisions`
 
 ---
 
@@ -1220,7 +1220,7 @@ Expose vertical scaling signals through Prometheus, identically for both analyze
    - New Prometheus metrics and the actuation boundary.
 2. Update `docs/developer-guide/configuration.md` with `scaleUpSLOFactor` and `scaleDownSLOFactor`.
 
-**Status** — `[ ] pending`
+**Status** — `[x] complete — docs/developer-guide/vertical-scaling.md created; docs/developer-guide/configuration.md updated with scaleUpSLOFactor/scaleDownSLOFactor`
 
 ---
 
