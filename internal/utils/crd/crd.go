@@ -91,3 +91,12 @@ func CheckVariantAutoscalingCRD(restConfig *rest.Config, logger logr.Logger) (bo
 func CheckVPACRD(restConfig *rest.Config, logger logr.Logger) bool {
 	return CheckCRDInstalled(restConfig, "autoscaling.k8s.io/v1", "VerticalPodAutoscaler", logger)
 }
+
+// CheckDRACRD reports whether the DRA ResourceSlice CRD is installed.
+// ResourceSlice is the canonical DRA resource (resource.k8s.io/v1beta1) that
+// lists per-node device capacity. Its presence indicates that DRA is available
+// and the ResourceCapacityInventory can be used for vertical scaling decisions.
+// TODO: checked once at startup; handle DRA CRD installed after controller starts.
+func CheckDRACRD(restConfig *rest.Config, logger logr.Logger) bool {
+	return CheckCRDInstalled(restConfig, "resource.k8s.io/v1beta1", "ResourceSlice", logger)
+}

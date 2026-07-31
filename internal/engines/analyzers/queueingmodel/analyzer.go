@@ -126,7 +126,7 @@ func (a *QueueingModelAnalyzer) Analyze(
 
 	// Compute capacities
 	variantCapacities := a.computeAllVariantCapacities(
-		ctx, namespace, modelID, variantMetrics, input.VariantStates, sloTarget,
+		ctx, namespace, modelID, variantMetrics, input.VariantStates, sloTarget, qConfig,
 	)
 	if len(variantCapacities) == 0 {
 		return nil, fmt.Errorf("could not compute variant capacities for model %q", modelID)
@@ -266,6 +266,7 @@ func (a *QueueingModelAnalyzer) computeAllVariantCapacities(
 	variantMetrics map[string][]interfaces.ReplicaMetrics,
 	variantStates []interfaces.VariantReplicaState,
 	sloTarget *SLOTarget,
+	qmConfig *QMConfig,
 ) []interfaces.VariantCapacity {
 	logger := ctrl.LoggerFrom(ctx)
 
@@ -409,6 +410,60 @@ func (a *QueueingModelAnalyzer) computeAllVariantCapacities(
 			TotalDemand:        totalArrivalRate,
 			Utilization:        arrivalRatePerReplica / maxRequestRate,
 		}
+
+		// Vertical hint: only when there is actual scale-up pressure or scale-down room.
+		rc := math.Max(0, totalArrivalRate-variantCapacity.TotalCapacity)
+		sc := math.Max(0, variantCapacity.TotalCapacity-totalArrivalRate)
+		if rc > 0 || sc > 0 {
+			scaleUpTarget := &analyzer.TargetPerf{
+				TargetTTFT: sloTarget.TargetTTFT / float32(qmConfig.scaleUpFactor()),
+				TargetITL:  sloTarget.TargetITL / float32(qmConfig.scaleUpFactor()),
+			}
+			var scaleUpRPS float64
+			if _, m, _, err := queueAnalyzer.Size(scaleUpTarget); err == nil {
+				scaleUpRPS = float64(m.Throughput)
+			}
+
+			scaleDownTarget := &analyzer.TargetPerf{
+				TargetTTFT: sloTarget.TargetTTFT * float32(qmConfig.scaleDownFactor()),
+				TargetITL:  sloTarget.TargetITL * float32(qmConfig.scaleDownFactor()),
+			}
+			var scaleDownRPS float64
+			if _, m, _, err := queueAnalyzer.Size(scaleDownTarget); err == nil {
+				scaleDownRPS = float64(m.Throughput)
+			}
+
+			if scaleUpRPS > 0 || scaleDownRPS > 0 {
+				obs := a.observationStore.Get(namespace, modelID, variantName)
+				var demand *interfaces.ResourceRequirement
+				// Only build resource requirements when the observation store is
+				// bootstrapped — i.e. we have seen at least one tick with cache config
+				// data (MemoryWeight > 0) or a saturated tick (MaxComputeIntensity > 0).
+				if obs != nil && (obs.MemoryWeight > 0 || obs.MaxComputeIntensity > 0) {
+					bpt := obs.BytePerToken
+					if bpt == 0 {
+						bpt = analyzerconstants.BytesPerKVToken
+					}
+					memoryDemand := obs.MemoryWeight + bpt*(scaleUpRPS*(wm.avgInputTokens+wm.avgOutputTokens))
+					var computeFraction float64
+					if obs.MaxComputeIntensity > 0 {
+						iTarget := scaleUpRPS * (wm.avgInputTokens + analyzerconstants.ComputeIntensityAlpha*wm.avgOutputTokens)
+						computeFraction = math.Min(iTarget/obs.MaxComputeIntensity, 1.0)
+					}
+					demand = &interfaces.ResourceRequirement{
+						ComputeFraction: computeFraction,
+						MemoryBytes:     int64(memoryDemand),
+					}
+				}
+
+				variantCapacity.VerticalHint = &interfaces.VerticalHint{
+					ScaleUpPerReplicaCapacity:   scaleUpRPS,
+					ScaleDownPerReplicaCapacity: scaleDownRPS,
+					DemandPerReplicaResource:    demand,
+				}
+			}
+		}
+
 		variantCapacities = append(variantCapacities, variantCapacity)
 	}
 

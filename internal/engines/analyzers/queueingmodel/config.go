@@ -20,6 +20,18 @@ type QMConfig struct {
 	// Zero value means use DefaultSLOMultiplier (3.0, rho=0.67).
 	SLOMultiplier float64
 
+	// ScaleUpSLOFactor tightens the SLO for the vertical scale-up throughput target.
+	// TargetTTFT/ITL are divided by this factor before calling queueAnalyzer.Size,
+	// yielding a lower maxRPS (more resource needed). e.g. 0.75 → 25% tighter budget.
+	// Zero value uses DefaultScaleUpSLOFactor.
+	ScaleUpSLOFactor float64
+
+	// ScaleDownSLOFactor relaxes the SLO for the vertical scale-down floor computation.
+	// TargetTTFT/ITL are multiplied by this factor, yielding a higher maxRPS (less
+	// resource needed). e.g. 2.0 → 2× looser budget.
+	// Zero value uses DefaultScaleDownSLOFactor.
+	ScaleDownSLOFactor float64
+
 	// Tuning configuration
 	TuningEnabled bool
 
@@ -39,6 +51,22 @@ type SLOTarget struct {
 // GetAnalyzerName implements interfaces.AnalyzerConfig
 func (c *QMConfig) GetAnalyzerName() string {
 	return interfaces.QueueingModelAnalyzerName
+}
+
+// scaleUpFactor returns the effective ScaleUpSLOFactor, applying the default when zero.
+func (c *QMConfig) scaleUpFactor() float64 {
+	if c.ScaleUpSLOFactor == 0 {
+		return DefaultScaleUpSLOFactor
+	}
+	return c.ScaleUpSLOFactor
+}
+
+// scaleDownFactor returns the effective ScaleDownSLOFactor, applying the default when zero.
+func (c *QMConfig) scaleDownFactor() float64 {
+	if c.ScaleDownSLOFactor == 0 {
+		return DefaultScaleDownSLOFactor
+	}
+	return c.ScaleDownSLOFactor
 }
 
 // GetSLOForModel retrieves SLO targets for a model in a namespace

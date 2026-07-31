@@ -168,6 +168,12 @@ func buildQMConfig(
 		if defaultCfg.SLOMultiplier > 1.0 {
 			cfg.SLOMultiplier = defaultCfg.SLOMultiplier
 		}
+		if defaultCfg.ScaleUpSLOFactor > 0 {
+			cfg.ScaleUpSLOFactor = defaultCfg.ScaleUpSLOFactor
+		}
+		if defaultCfg.ScaleDownSLOFactor > 0 {
+			cfg.ScaleDownSLOFactor = defaultCfg.ScaleDownSLOFactor
+		}
 	}
 
 	// Scan for a per-model override matching this model
@@ -185,6 +191,12 @@ func buildQMConfig(
 		}
 		if entry.TuningEnabled != nil {
 			cfg.TuningEnabled = *entry.TuningEnabled
+		}
+		if entry.ScaleUpSLOFactor > 0 {
+			cfg.ScaleUpSLOFactor = entry.ScaleUpSLOFactor
+		}
+		if entry.ScaleDownSLOFactor > 0 {
+			cfg.ScaleDownSLOFactor = entry.ScaleDownSLOFactor
 		}
 
 		// Populate explicit SLO targets if both are set

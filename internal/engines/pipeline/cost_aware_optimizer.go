@@ -65,7 +65,7 @@ func (o *CostAwareOptimizer) Optimize(
 			scaleDownRoleIterated(ctx, s, satEntry.VariantCapacities, targets, stateMap)
 		}
 
-		decisions := buildDecisionsWithOptimizer(req, stateMap, vcMap, targets, "cost-aware")
+		decisions := buildDecisionsWithOptimizer(req, stateMap, vcMap, targets, "cost-aware", nil)
 		logger.V(logging.DEBUG).Info("Cost-aware optimizer decisions",
 			"modelID", req.ModelID,
 			"decisions", len(decisions))
@@ -246,6 +246,7 @@ func buildDecisionsWithOptimizer(
 	vcMap map[string]interfaces.VariantCapacity,
 	targets map[string]int,
 	optimizerName string,
+	verticalTargets map[string]verticalTarget,
 ) []interfaces.VariantDecision {
 	decisions := make([]interfaces.VariantDecision, 0, len(targets))
 	for name, target := range targets {
@@ -270,21 +271,34 @@ func buildDecisionsWithOptimizer(
 			detailedReason = string(decisionReason)
 		}
 
+		// vcMap holds the original (un-patched) PerReplicaCapacity, built before
+		// applyVerticalScaleUp may patch the working slice.
+		currentPRC := vc.PerReplicaCapacity
+
 		decision := interfaces.VariantDecision{
-			VariantName:     name,
-			ModelID:         req.ModelID,
-			Namespace:       req.Namespace,
-			AcceleratorName: vc.AcceleratorName,
-			Cost:            vc.Cost,
-			Role:            state.Role,
-			CurrentReplicas: state.CurrentReplicas,
-			TargetReplicas:  target,
-			MinReplicas:     state.MinReplicas,
-			MaxReplicas:     state.MaxReplicas,
+			VariantName:               name,
+			ModelID:                   req.ModelID,
+			Namespace:                 req.Namespace,
+			AcceleratorName:           vc.AcceleratorName,
+			Cost:                      vc.Cost,
+			Role:                      state.Role,
+			CurrentReplicas:           state.CurrentReplicas,
+			TargetReplicas:            target,
+			MinReplicas:               state.MinReplicas,
+			MaxReplicas:               state.MaxReplicas,
+			CurrentPerReplicaCapacity: currentPRC,
+			VerticalAction:            interfaces.VerticalNoChange,
 		}
 		// SetDecisionReason is the single place that sets d.Action (avoids a
 		// redundant Action assignment in the struct literal above).
 		decision.SetDecisionReason(action, decisionReason, detailedReason)
+
+		if vt, ok := verticalTargets[name]; ok {
+			decision.VerticalAction = vt.Action
+			decision.TargetPerReplicaCapacity = vt.TargetPRC
+			decision.DemandPerReplicaResource = vt.DemandPerReplicaResource
+		}
+
 		decisions = append(decisions, decision)
 	}
 	return decisions

@@ -331,6 +331,22 @@ type VariantDecision struct {
 	// LimitedBy identifies which limiter constrained the decision (if any)
 	LimitedBy string
 
+	// --- Vertical scaling ---
+	// VerticalAction is the vertical scaling direction for this variant.
+	// VerticalNoChange when vertical scaling is not applicable or not enabled.
+	VerticalAction VerticalScalingAction
+	// TargetPerReplicaCapacity is the desired per-replica capacity after vertical scaling.
+	// Sat V2: tokens. QM: req/s. Zero when VerticalAction == VerticalNoChange.
+	TargetPerReplicaCapacity float64
+	// CurrentPerReplicaCapacity is PerReplicaCapacity at analysis time (before any
+	// vertical patching). Used by the actuator: scaleFactor = Target / Current.
+	// Zero when VerticalAction == VerticalNoChange.
+	CurrentPerReplicaCapacity float64
+	// DemandPerReplicaResource is the Step-policy-rounded resource target for this
+	// vertical action. Nil when VerticalAction == VerticalNoChange or the observation
+	// store was not yet bootstrapped when the hint was produced.
+	DemandPerReplicaResource *ResourceRequirement
+
 	// --- Replica bounds ---
 	// MinReplicas is the minimum number of replicas for this variant (from VA spec field).
 	// nil means not set (default: 0).
@@ -398,6 +414,18 @@ const (
 	ActionNoChange  SaturationAction = "no-change"
 )
 
+// VerticalScalingAction describes the vertical scaling direction for a variant.
+type VerticalScalingAction string
+
+const (
+	// VerticalNoChange means vertical scaling is not applicable or not enabled.
+	VerticalNoChange VerticalScalingAction = "no-change"
+	// VerticalScaleUp means per-replica capacity should increase.
+	VerticalScaleUp VerticalScalingAction = "scale-up"
+	// VerticalScaleDown means per-replica capacity should decrease.
+	VerticalScaleDown VerticalScalingAction = "scale-down"
+)
+
 // VariantReplicaState holds the current and desired replica counts for a variant
 type VariantReplicaState struct {
 	VariantName     string
@@ -422,6 +450,10 @@ type VariantReplicaState struct {
 	// MaxReplicas is the maximum number of replicas for this variant (from VA spec field).
 	// nil means not set (default: 0, no cap).
 	MaxReplicas *int
+	// VerticalScalingEnabled is true when the variant has a ResourceClaimPolicy set
+	// (i.e., va.Spec.ResourceClaimPolicy != nil). The optimizer only acts on
+	// VerticalHint when this flag is true.
+	VerticalScalingEnabled bool
 }
 
 // SaturationAnalyzer analyzes replica saturation metrics and recommends scaling decisions

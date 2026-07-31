@@ -160,6 +160,10 @@ type Engine struct {
 	// shared between the sat V2 and QM analyzers. Created once at engine init.
 	observationStore *observationstore.VariantObservationStore
 
+	// rcInventory tracks available and claimed DRA device capacity for the
+	// MultiDimensionalOptimizer. Nil when the DRA CRD is absent.
+	rcInventory *discovery.ResourceCapacityInventory
+
 	// analyzers is the engine's analyzer registry, mutated only during setup
 	// (NewEngine + RegisterAnalyzer). After StartOptimizeLoop it is frozen —
 	// further RegisterAnalyzer calls return an error. The optimize goroutine reads
@@ -244,6 +248,9 @@ func NewEngine(client client.Client, apiReader client.Reader, scheme *runtime.Sc
 		optimizer:               scalingOptimizer,
 		metricsEmitter:          metrics.NewMetricsEmitter(),
 		v1AnalyzerFactory:       defaultV1AnalyzerFactory,
+		// rcInventory defaults to DRA-absent. Call SetDRAInventory after construction
+		// when CheckDRACRD confirms the CRD is present.
+		rcInventory: discovery.NewResourceCapacityInventory(client, true /* draAbsent */),
 		analyzers: []analyzerEntry{
 			{name: interfaces.SaturationAnalyzerName, analyzer: satV2},
 		},
@@ -274,6 +281,14 @@ func NewEngine(client client.Client, apiReader client.Reader, scheme *runtime.Sc
 	registration.RegisterQueueingModelQueries(metricsRegistry)
 
 	return &engine
+}
+
+// SetDRAInventory replaces the engine's DRA resource capacity inventory.
+// Call this after NewEngine when CheckDRACRD confirms the DRA CRD is present,
+// passing a non-draAbsent inventory so the MultiDimensionalOptimizer can
+// perform DRA headroom checks for vertical scaling.
+func (e *Engine) SetDRAInventory(inv *discovery.ResourceCapacityInventory) {
+	e.rcInventory = inv
 }
 
 // RegisterAnalyzer adds an external analyzer to the engine's analyzer
@@ -993,14 +1008,15 @@ func (e *Engine) BuildVariantStates(
 			desiredReplicas = int(*va.Status.DesiredOptimizedAlloc.NumReplicas)
 		}
 		states = append(states, interfaces.VariantReplicaState{
-			VariantName:     va.Name,
-			CurrentReplicas: currentReplicas,
-			DesiredReplicas: desiredReplicas,
-			PendingReplicas: pendingReplicas,
-			GPUsPerReplica:  gpusPerReplica,
-			Role:            role,
-			MinReplicas:     minReplicas,
-			MaxReplicas:     maxReplicas,
+			VariantName:            va.Name,
+			CurrentReplicas:        currentReplicas,
+			DesiredReplicas:        desiredReplicas,
+			PendingReplicas:        pendingReplicas,
+			GPUsPerReplica:         gpusPerReplica,
+			Role:                   role,
+			MinReplicas:            minReplicas,
+			MaxReplicas:            maxReplicas,
+			VerticalScalingEnabled: va.Spec.ResourceClaimPolicy != nil,
 		})
 	}
 
@@ -1590,6 +1606,23 @@ func (e *Engine) applySaturationDecisions(
 		// their last-recorded values until Prometheus' staleness marker fires.
 		if hasDecision && constants.IsAcceleratorResolved(acceleratorName) {
 			act.RecordSaturationMetrics(ctx, decision)
+
+			// Emit vertical scaling metrics when the optimizer produced a
+			// vertical action for this variant.
+			if decision.VerticalAction == interfaces.VerticalScaleUp || decision.VerticalAction == interfaces.VerticalScaleDown {
+				capacityValues := map[string]int64{}
+				if decision.DemandPerReplicaResource != nil {
+					capacityValues["memory"] = decision.DemandPerReplicaResource.MemoryBytes
+				}
+				direction := "up"
+				if decision.VerticalAction == interfaces.VerticalScaleDown {
+					direction = "down"
+				}
+				e.metricsEmitter.RecordVerticalScalingMetrics(
+					decision.VariantName, decision.Namespace, decision.ModelID,
+					acceleratorName, capacityValues, direction,
+				)
+			}
 		}
 
 		// The wva_saturation_metrics_up freshness gauge carries only

@@ -41,6 +41,14 @@ type QueueingModelScalingConfig struct {
 	// TargetITL is the target inter-token latency in milliseconds.
 	// Zero means infer from metrics using the queueing model.
 	TargetITL float32 `yaml:"targetITL,omitempty"`
+
+	// ScaleUpSLOFactor tightens the SLO for vertical scale-up target computation.
+	// TargetTTFT/ITL are divided by this factor. Zero uses default (0.75).
+	ScaleUpSLOFactor float64 `yaml:"scaleUpSLOFactor,omitempty"`
+
+	// ScaleDownSLOFactor relaxes the SLO for vertical scale-down floor computation.
+	// TargetTTFT/ITL are multiplied by this factor. Zero uses default (2.0).
+	ScaleDownSLOFactor float64 `yaml:"scaleDownSLOFactor,omitempty"`
 }
 
 // GetAnalyzerName implements the AnalyzerConfig interface.

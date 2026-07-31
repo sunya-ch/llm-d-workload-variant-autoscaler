@@ -125,7 +125,7 @@ func (o *GreedyByScoreOptimizer) Optimize(
 	for _, w := range scaleUpWork {
 		stateMap := buildStateMap(w.req.VariantStates)
 		vcMap := buildCapacityMap(w.satEntry.VariantCapacities)
-		decisions := buildDecisionsWithOptimizer(w.req, stateMap, vcMap, w.targets, "greedy-by-score")
+		decisions := buildDecisionsWithOptimizer(w.req, stateMap, vcMap, w.targets, "greedy-by-score", nil)
 		logger.V(logging.DEBUG).Info("Greedy-by-score optimizer decisions (scale-up)",
 			"modelID", w.req.ModelID,
 			"decisions", len(decisions))
@@ -147,7 +147,7 @@ func (o *GreedyByScoreOptimizer) Optimize(
 		_, _ = initRoleState(s) // populates RoleSpare for all roles
 		scaleDownRoleIterated(ctx, s, satEntry.VariantCapacities, targets, stateMap)
 
-		decisions := buildDecisionsWithOptimizer(req, stateMap, vcMap, targets, "greedy-by-score")
+		decisions := buildDecisionsWithOptimizer(req, stateMap, vcMap, targets, "greedy-by-score", nil)
 		logger.V(logging.DEBUG).Info("Greedy-by-score optimizer decisions (other)",
 			"modelID", req.ModelID,
 			"decisions", len(decisions))

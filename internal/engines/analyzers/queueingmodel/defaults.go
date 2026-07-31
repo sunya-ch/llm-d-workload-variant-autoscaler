@@ -13,6 +13,16 @@ const (
 	// k=3 corresponds to utilization ρ = 1 - 1/k = 0.67.
 	DefaultSLOMultiplier = 3.0
 
+	// DefaultScaleUpSLOFactor tightens the SLO for vertical scale-up target computation.
+	// TargetTTFT/ITL are divided by this factor, giving a lower maxRPS and thus more
+	// resource headroom. 0.75 corresponds to a 25% tighter SLO budget.
+	DefaultScaleUpSLOFactor = 0.75
+
+	// DefaultScaleDownSLOFactor relaxes the SLO for vertical scale-down floor computation.
+	// TargetTTFT/ITL are multiplied by this factor, giving a higher maxRPS and thus
+	// less resource needed. 2.0 allows twice the latency before shrinking.
+	DefaultScaleDownSLOFactor = 2.0
+
 	// DefaultMaxFallbackTTFT caps the observation-based fallback TTFT SLO (ms).
 	DefaultMaxFallbackTTFT = 10000.0
 
