@@ -384,6 +384,7 @@ func (a *SaturationAnalyzer) aggregateByVariant(
 		}
 
 		var capacityLabel string
+		var verticalHint *interfaces.VerticalHint
 		if len(replicas) > 0 {
 			// Use median effective capacity from ready pods
 			capacities := make([]int64, 0, len(replicas))
@@ -396,6 +397,10 @@ func (a *SaturationAnalyzer) aggregateByVariant(
 				accelerator = replicas[0].AcceleratorName
 			}
 			capacityLabel = k2SourceLabel(replicas)
+
+			totalCapacity := float64(readyCount) * perReplicaCapacity
+			obs := a.observationStore.Get(namespace, modelID, vs.VariantName)
+			verticalHint = computeVerticalHint(obs, totalDemand, totalCapacity, readyCount)
 		} else if rec := a.capacityStore.Get(namespace, modelID, vs.VariantName); rec != nil && rec.EffectiveCapacity > 0 {
 			// No ready replicas — use stored capacity, enhanced with k2 derivation
 			// for deployment-derived records when workload data is available.
@@ -428,6 +433,7 @@ func (a *SaturationAnalyzer) aggregateByVariant(
 			TotalDemand:        totalDemand,
 			Utilization:        utilization,
 			Reason:             capacityLabel,
+			VerticalHint:       verticalHint,
 		})
 	}
 
@@ -702,4 +708,104 @@ func median(values []int64) int64 {
 		return (sorted[n/2-1] + sorted[n/2]) / 2
 	}
 	return sorted[n/2]
+}
+
+// computeVerticalHint produces a VerticalHint from per-variant saturation signals.
+//
+// Returns nil when:
+//   - obs is nil (observation store has no entry yet), or
+//   - obs.MaxComputeIntensity == 0 (no saturated tick observed yet), or
+//   - readyCount == 0 (no ready replicas to size against), or
+//   - supply and demand are balanced (nothing to adjust), or
+//   - the observation store lacks memory data (MemoryWeight == 0 and BytePerToken == 0).
+func computeVerticalHint(
+	obs *observationstore.VariantObservation,
+	totalDemand float64,
+	totalCapacity float64,
+	readyCount int,
+) *interfaces.VerticalHint {
+	if obs == nil || obs.MaxComputeIntensity == 0 || readyCount == 0 {
+		return nil
+	}
+	// Only produce a hint when there is actual demand/supply imbalance.
+	scaleUp := totalDemand > totalCapacity
+	scaleDown := totalCapacity > totalDemand
+	if !scaleUp && !scaleDown {
+		return nil
+	}
+
+	// Target tokens per replica:
+	//   scale-up: absorb all demand with the current replica count.
+	//   scale-down: floor at the minimum capacity that leaves no spare.
+	scaleUpPRC := totalDemand / float64(readyCount)
+	scaleDownPRC := totalCapacity / float64(readyCount)
+	targetPRC := scaleUpPRC
+	if !scaleUp {
+		targetPRC = scaleDownPRC
+	}
+
+	// Compute raw demands (local intermediates — not stored on the hint).
+	computeDemand := obs.ComputeIntensity / obs.MaxComputeIntensity
+	if computeDemand > 1.0 {
+		computeDemand = 1.0
+	}
+
+	bpt := obs.BytePerToken
+	if bpt == 0 {
+		bpt = analyzerconstants.BytesPerKVToken
+	}
+	memoryDemand := obs.MemoryWeight + bpt*targetPRC
+
+	// applyStepPolicy: no VPA policy wired yet — pass-through with no clamping.
+	roundedCompute, roundedMemory := applyStepPolicy(computeDemand, memoryDemand)
+
+	// Derive the final PRC from the rounded memory demand (memory constraint drives
+	// the token count; compute fraction is dimensionless and doesn't produce a PRC).
+	finalPRC := inversePRC(roundedMemory, obs.MemoryWeight, bpt, targetPRC)
+
+	// For scale-down: only emit a hint when the final PRC is still meaningfully
+	// below the current per-replica capacity (scaleDownPRC).
+	if !scaleUp && finalPRC >= scaleDownPRC {
+		return nil
+	}
+
+	hint := &interfaces.VerticalHint{
+		DemandPerReplicaResource: &interfaces.ResourceRequirement{
+			ComputeFraction: roundedCompute,
+			MemoryBytes:     int64(roundedMemory),
+		},
+	}
+	if scaleUp {
+		hint.ScaleUpPerReplicaCapacity = finalPRC
+	} else {
+		hint.ScaleDownPerReplicaCapacity = finalPRC
+	}
+	return hint
+}
+
+// applyStepPolicy rounds compute and memory demand to VPA step boundaries.
+// In the initial implementation there is no VPA resource policy wired, so this
+// is a pass-through. The function signature is kept to make the future extension
+// point obvious: accept a policy object and clamp/round to its step grid.
+func applyStepPolicy(computeDemand, memoryDemand float64) (float64, float64) {
+	return computeDemand, memoryDemand
+}
+
+// inversePRC derives the per-replica capacity (tokens) that corresponds to the
+// given rounded memory demand, using the formula:
+//
+//	memoryDemand = MemoryWeight + BytePerToken × PRC
+//	→ PRC = (memoryDemand − MemoryWeight) / BytePerToken
+//
+// Falls back to targetPRC when the derivation is not possible (bpt == 0 or
+// the result would be negative).
+func inversePRC(roundedMemory, memoryWeight, bpt, targetPRC float64) float64 {
+	if bpt <= 0 {
+		return targetPRC
+	}
+	prc := (roundedMemory - memoryWeight) / bpt
+	if prc <= 0 {
+		return targetPRC
+	}
+	return prc
 }

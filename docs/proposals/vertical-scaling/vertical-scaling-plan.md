@@ -612,7 +612,7 @@ result = append(result, interfaces.VariantCapacity{
 3. Add `ResourceRequirement` struct to [`internal/interfaces/analyzer.go`](../../../internal/interfaces/analyzer.go) alongside `VerticalHint` (Sub-Task 1 can include this).
 4. Unit tests in [`saturation_v2/analyzer_test.go`](../../../internal/engines/analyzers/saturation_v2/analyzer_test.go).
 
-**Status** — `[ ] pending (blocked on Sub-Tasks 1 and 2a)`
+**Status** — `[x] complete`
 
 ---
 

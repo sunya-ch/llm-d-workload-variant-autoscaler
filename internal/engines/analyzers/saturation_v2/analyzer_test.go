@@ -1418,3 +1418,115 @@ var _ = Describe("k2SourceLabel", func() {
 		Expect(k2SourceLabel(nil)).To(Equal(""))
 	})
 })
+
+var _ = Describe("computeVerticalHint", func() {
+	// Shared observation with a bootstrapped compute wall.
+	bootstrappedObs := func() *observationstore.VariantObservation {
+		return &observationstore.VariantObservation{
+			ComputeIntensity:    50.0,
+			MaxComputeIntensity: 100.0,
+			MemoryWeight:        1_000_000.0, // 1 MB model weights
+			BytePerToken:        128.0,
+		}
+	}
+
+	Describe("nil / not-bootstrapped guards", func() {
+		It("returns nil when obs is nil", func() {
+			Expect(computeVerticalHint(nil, 2000, 1000, 2)).To(BeNil())
+		})
+
+		It("returns nil when MaxComputeIntensity is zero (not yet bootstrapped)", func() {
+			obs := bootstrappedObs()
+			obs.MaxComputeIntensity = 0
+			Expect(computeVerticalHint(obs, 2000, 1000, 2)).To(BeNil())
+		})
+
+		It("returns nil when readyCount is zero", func() {
+			Expect(computeVerticalHint(bootstrappedObs(), 2000, 1000, 0)).To(BeNil())
+		})
+
+		It("returns nil when demand equals capacity (balanced)", func() {
+			Expect(computeVerticalHint(bootstrappedObs(), 1000, 1000, 2)).To(BeNil())
+		})
+	})
+
+	Describe("scale-up path", func() {
+		It("sets ScaleUpPerReplicaCapacity when demand > capacity", func() {
+			// totalDemand=2000, totalCapacity=1000, readyCount=2
+			// scaleUpPRC = 2000/2 = 1000 tokens
+			hint := computeVerticalHint(bootstrappedObs(), 2000, 1000, 2)
+			Expect(hint).NotTo(BeNil())
+			Expect(hint.ScaleUpPerReplicaCapacity).To(BeNumerically(">", 0))
+			Expect(hint.ScaleDownPerReplicaCapacity).To(Equal(0.0))
+		})
+
+		It("populates DemandPerReplicaResource with compute fraction and memory bytes", func() {
+			hint := computeVerticalHint(bootstrappedObs(), 2000, 1000, 2)
+			Expect(hint).NotTo(BeNil())
+			Expect(hint.DemandPerReplicaResource).NotTo(BeNil())
+			// ComputeFraction = 50/100 = 0.5 (clamped to [0,1])
+			Expect(hint.DemandPerReplicaResource.ComputeFraction).To(BeNumerically("~", 0.5, 1e-9))
+			// MemoryBytes = 1_000_000 + 128*1000 = 1_128_000
+			Expect(hint.DemandPerReplicaResource.MemoryBytes).To(Equal(int64(1_128_000)))
+		})
+
+		It("clamps ComputeFraction to 1.0 when ComputeIntensity > MaxComputeIntensity", func() {
+			obs := bootstrappedObs()
+			obs.ComputeIntensity = 200.0 // exceeds max
+			hint := computeVerticalHint(obs, 2000, 1000, 2)
+			Expect(hint).NotTo(BeNil())
+			Expect(hint.DemandPerReplicaResource.ComputeFraction).To(Equal(1.0))
+		})
+
+		It("uses BytesPerKVToken fallback when BytePerToken is zero", func() {
+			obs := bootstrappedObs()
+			obs.BytePerToken = 0
+			hint := computeVerticalHint(obs, 2000, 1000, 2)
+			Expect(hint).NotTo(BeNil())
+			// memory = 1_000_000 + 128*1000 = 1_128_000 (same as default bpt=128)
+			Expect(hint.DemandPerReplicaResource.MemoryBytes).To(Equal(int64(1_128_000)))
+		})
+
+		It("derives ScaleUpPerReplicaCapacity inversely from memory formula", func() {
+			obs := bootstrappedObs()
+			// PRC = (memoryDemand - MemoryWeight) / bpt
+			//     = (1_128_000 - 1_000_000) / 128 = 1000
+			hint := computeVerticalHint(obs, 2000, 1000, 2)
+			Expect(hint).NotTo(BeNil())
+			Expect(hint.ScaleUpPerReplicaCapacity).To(BeNumerically("~", 1000.0, 1e-9))
+		})
+	})
+
+	Describe("scale-down path", func() {
+		It("returns nil without step rounding (inversePRC == scaleDownPRC is lossless)", func() {
+			// With a pass-through applyStepPolicy, memoryDemand is computed from targetPRC
+			// so inversePRC always equals scaleDownPRC exactly — the guard fires and
+			// returns nil. Scale-down hints require step rounding to create headroom.
+			hint := computeVerticalHint(bootstrappedObs(), 500, 2000, 2)
+			Expect(hint).To(BeNil())
+		})
+	})
+})
+
+var _ = Describe("applyStepPolicy", func() {
+	It("is a pass-through in the initial implementation", func() {
+		c, m := applyStepPolicy(0.75, 2_000_000.0)
+		Expect(c).To(Equal(0.75))
+		Expect(m).To(Equal(2_000_000.0))
+	})
+})
+
+var _ = Describe("inversePRC", func() {
+	It("returns (roundedMemory - memoryWeight) / bpt when bpt > 0", func() {
+		Expect(inversePRC(1_128_000, 1_000_000, 128, 999)).To(BeNumerically("~", 1000.0, 1e-9))
+	})
+
+	It("falls back to targetPRC when bpt is zero", func() {
+		Expect(inversePRC(1_128_000, 1_000_000, 0, 999)).To(Equal(999.0))
+	})
+
+	It("falls back to targetPRC when result would be non-positive", func() {
+		// memoryDemand < memoryWeight → negative PRC
+		Expect(inversePRC(500_000, 1_000_000, 128, 999)).To(Equal(999.0))
+	})
+})
