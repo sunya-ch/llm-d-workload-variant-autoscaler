@@ -207,6 +207,18 @@ const (
 	// pod locator resolved them). Makes the otherwise-silent skip visible.
 	// Labels: namespace, reason
 	WVAPodMappingMissTotal = "wva_pod_mapping_miss_total"
+
+	// WVAVariantTargetCapacityPerGPU is a gauge that records the last recommended
+	// DRA capacity target per replica for each vertical-scaling-eligible variant.
+	// Labels: variant_name, namespace, model_id, accelerator_type, capacity
+	// The "capacity" label holds the DRA capacity dimension name
+	// (e.g. "gpu.nvidia.com/vram").
+	WVAVariantTargetCapacityPerGPU = "wva_variant_target_capacity_per_gpu"
+
+	// WVAVerticalScalingTotal is a counter that tracks cumulative vertical
+	// scaling decisions produced by the optimizer.
+	// Labels: variant_name, namespace, model_id, direction (up/down)
+	WVAVerticalScalingTotal = "wva_vertical_scaling_total"
 )
 
 // Pod-mapping miss reasons (values for the `reason` label of WVAPodMappingMissTotal).
@@ -243,6 +255,12 @@ const (
 	// wva_required_capacity, whose value is either a binary scale-up signal (V1)
 	// or a continuous token-demand value (V2).
 	LabelUnit = "unit"
+
+	// LabelModelID is the model identifier label, used on vertical scaling metrics.
+	LabelModelID = "model_id"
+
+	// LabelCapacity is the DRA capacity dimension name label (e.g. "gpu.nvidia.com/vram").
+	LabelCapacity = "capacity"
 )
 
 // Metric Label Values for query_type

@@ -74,6 +74,10 @@ var (
 	kvCacheTokensCapacity *prometheus.GaugeVec
 	saturationMetricsUp   *prometheus.GaugeVec
 
+	// Vertical scaling metrics
+	variantTargetCapacityPerGPU *prometheus.GaugeVec
+	verticalScalingTotal        *prometheus.CounterVec
+
 	// controllerInstance stores the optional controller instance identifier.
 	// When set, it's added as a label to all emitted metrics.
 	controllerInstance string
@@ -391,6 +395,34 @@ func InitMetrics(registry prometheus.Registerer) error {
 		podMappingMissLabels,
 	)
 
+	// Vertical scaling metrics
+	verticalCapacityLabels := []string{
+		constants.LabelVariantName, constants.LabelNamespace,
+		constants.LabelModelID, constants.LabelAcceleratorType, constants.LabelCapacity,
+	}
+	verticalCounterLabels := []string{
+		constants.LabelVariantName, constants.LabelNamespace,
+		constants.LabelModelID, constants.LabelDirection,
+	}
+	if controllerInstance != "" {
+		verticalCapacityLabels = append(verticalCapacityLabels, constants.LabelControllerInstance)
+		verticalCounterLabels = append(verticalCounterLabels, constants.LabelControllerInstance)
+	}
+	variantTargetCapacityPerGPU = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: constants.WVAVariantTargetCapacityPerGPU,
+			Help: "Last recommended DRA capacity target per replica for vertical-scaling-eligible variants. The 'capacity' label names the DRA capacity dimension (e.g. gpu.nvidia.com/vram).",
+		},
+		verticalCapacityLabels,
+	)
+	verticalScalingTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: constants.WVAVerticalScalingTotal,
+			Help: "Cumulative count of vertical scaling decisions produced by the optimizer.",
+		},
+		verticalCounterLabels,
+	)
+
 	// Register metrics with the registry
 	if err := registry.Register(replicaScalingTotal); err != nil {
 		return fmt.Errorf("failed to register replicaScalingTotal metric: %w", err)
@@ -472,6 +504,12 @@ func InitMetrics(registry prometheus.Registerer) error {
 	}
 	if err := registry.Register(saturationMetricsUp); err != nil {
 		return fmt.Errorf("failed to register saturationMetricsUp metric: %w", err)
+	}
+	if err := registry.Register(variantTargetCapacityPerGPU); err != nil {
+		return fmt.Errorf("failed to register variantTargetCapacityPerGPU metric: %w", err)
+	}
+	if err := registry.Register(verticalScalingTotal); err != nil {
+		return fmt.Errorf("failed to register verticalScalingTotal metric: %w", err)
 	}
 
 	return nil
@@ -934,4 +972,44 @@ func (m *MetricsEmitter) RecordSaturationFreshness(ctx context.Context, variantN
 		value = 1.0
 	}
 	saturationMetricsUp.With(labels).Set(value)
+}
+
+// RecordVerticalScalingMetrics sets the target capacity gauge for each capacity
+// dimension and increments the vertical scaling counter.
+//
+// capacityValues maps DRA capacity dimension names (e.g. "gpu.nvidia.com/vram")
+// to the target value in milli-units (as returned by resource.Quantity.MilliValue()).
+// direction must be "up" or "down".
+func (m *MetricsEmitter) RecordVerticalScalingMetrics(
+	variantName, namespace, modelID, acceleratorType string,
+	capacityValues map[string]int64,
+	direction string,
+) {
+	if variantTargetCapacityPerGPU == nil || verticalScalingTotal == nil {
+		return
+	}
+	for capName, capVal := range capacityValues {
+		labels := prometheus.Labels{
+			constants.LabelVariantName:    variantName,
+			constants.LabelNamespace:      namespace,
+			constants.LabelModelID:        modelID,
+			constants.LabelAcceleratorType: acceleratorType,
+			constants.LabelCapacity:       capName,
+		}
+		if controllerInstance != "" {
+			labels[constants.LabelControllerInstance] = controllerInstance
+		}
+		variantTargetCapacityPerGPU.With(labels).Set(float64(capVal))
+	}
+
+	counterLabels := prometheus.Labels{
+		constants.LabelVariantName: variantName,
+		constants.LabelNamespace:   namespace,
+		constants.LabelModelID:     modelID,
+		constants.LabelDirection:   direction,
+	}
+	if controllerInstance != "" {
+		counterLabels[constants.LabelControllerInstance] = controllerInstance
+	}
+	verticalScalingTotal.With(counterLabels).Inc()
 }
