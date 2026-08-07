@@ -100,6 +100,7 @@ func NewVariantAutoscalingReconciler(
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=inference.networking.x-k8s.io;inference.networking.k8s.io,resources=inferencepools,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments/scale,verbs=get;update
+// +kubebuilder:rbac:groups=resource.k8s.io,resources=resourceclaimtemplates,verbs=get;list;watch
 
 const (
 	// ServiceMonitor constants for watching controller's own metrics ServiceMonitor

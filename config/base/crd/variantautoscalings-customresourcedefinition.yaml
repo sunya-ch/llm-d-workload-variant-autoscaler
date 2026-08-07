@@ -1,3 +1,4 @@
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -10,8 +11,7 @@ spec:
     kind: VariantAutoscaling
     listKind: VariantAutoscalingList
     plural: variantautoscalings
-    shortNames:
-      - va
+    shortNames: [va]
     singular: variantautoscaling
   scope: Namespaced
   versions:
@@ -38,7 +38,9 @@ spec:
           name: Age
           type: date
       deprecated: true
-      deprecationWarning: VariantAutoscaling is deprecated and will be removed in a future release. Migrate to the annotation-based path (add llm-d.ai/managed=true to your HPA or ScaledObject). See docs/developer-guide/migrating-from-va-crd.md.
+      deprecationWarning: VariantAutoscaling is deprecated and will be removed in
+        a future release. Migrate to the annotation-based path (add llm-d.ai/managed=true
+        to your HPA or ScaledObject). See docs/developer-guide/migrating-from-va-crd.md.
       name: v1alpha1
       schema:
         openAPIV3Schema:
@@ -64,7 +66,8 @@ spec:
             metadata:
               type: object
             spec:
-              description: Spec defines the desired state for autoscaling the model variant.
+              description: Spec defines the desired state for autoscaling the model
+                variant.
               properties:
                 maxReplicas:
                   default: 2
@@ -84,7 +87,8 @@ spec:
                   minimum: 0
                   type: integer
                 modelID:
-                  description: ModelID specifies the unique identifier of the model to be autoscaled.
+                  description: ModelID specifies the unique identifier of the model
+                    to be autoscaled.
                   minLength: 1
                   type: string
                 resourceClaimPolicy:
@@ -109,18 +113,15 @@ spec:
                       items:
                         description: |-
                           QualifiedName is the name of a device attribute or capacity.
-
                           Attributes and capacities are defined either by the owner of the specific
                           driver (usually the vendor) or by some 3rd party (e.g. the Kubernetes
                           project). Because they are sometimes compared across devices, a given name
                           is expected to mean the same thing and have the same type on all devices.
-
                           Names must be either a C identifier (e.g. "theName") or a DNS subdomain
                           followed by a slash ("/") followed by a C identifier
                           (e.g. "dra.example.com/theName"). Names which do not include the
                           domain prefix are assumed to be part of the driver's domain. Attributes
                           or capacities defined by 3rd parties must include the domain prefix.
-
                           The maximum length for the DNS subdomain is 63 characters (same as
                           for driver names) and the maximum length of the C identifier
                           is 32.
@@ -156,14 +157,13 @@ spec:
                         for the container. The default is no minimum.
                         Keys are bare capacity names (e.g. "memory"), not the full "deviceClass/capacity" form.
                       type: object
-                  required:
-                    - claimTemplateName
-                    - controlledCapacities
-                    - deviceClassName
+                  required: [claimTemplateName, controlledCapacities, deviceClassName]
                   type: object
                   x-kubernetes-validations:
-                    - message: controlledCapacities must contain at least one capacity name
-                      rule: has(self.controlledCapacities) && size(self.controlledCapacities) > 0
+                    - message: controlledCapacities must contain at least one capacity
+                        name
+                      rule: has(self.controlledCapacities) && size(self.controlledCapacities)
+                        > 0
                 scaleTargetRef:
                   description: |-
                     ScaleTargetRef references the scalable resource to manage.
@@ -178,39 +178,39 @@ spec:
                     name:
                       description: 'name is the name of the referent; More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
                       type: string
-                  required:
-                    - kind
-                    - name
+                  required: [kind, name]
                   type: object
                 variantCost:
-                  default: "10.0"
-                  description: VariantCost specifies the cost per replica for this variant (used in saturation analysis).
+                  default: '10.0'
+                  description: VariantCost specifies the cost per replica for this
+                    variant (used in saturation analysis).
                   pattern: ^\d+(\.\d+)?$
                   type: string
-              required:
-                - maxReplicas
-                - modelID
-                - scaleTargetRef
+              required: [maxReplicas, modelID, scaleTargetRef]
               type: object
               x-kubernetes-validations:
                 - message: minReplicas must be less than or equal to maxReplicas
                   rule: '!has(self.minReplicas) || self.minReplicas <= self.maxReplicas'
             status:
-              description: Status represents the current status of autoscaling for the model variant.
+              description: Status represents the current status of autoscaling for
+                the model variant.
               properties:
                 actuation:
-                  description: Actuation provides details about the actuation process and its current status.
+                  description: Actuation provides details about the actuation process
+                    and its current status.
                   properties:
                     applied:
-                      description: Applied indicates whether the actuation was successfully applied.
+                      description: Applied indicates whether the actuation was successfully
+                        applied.
                       type: boolean
-                  required:
-                    - applied
+                  required: [applied]
                   type: object
                 conditions:
-                  description: Conditions represent the latest available observations of the VariantAutoscaling's state
+                  description: Conditions represent the latest available observations
+                    of the VariantAutoscaling's state
                   items:
-                    description: Condition contains details for one aspect of the current state of this API Resource.
+                    description: Condition contains details for one aspect of the
+                      current state of this API Resource.
                     properties:
                       lastTransitionTime:
                         description: |-
@@ -244,39 +244,32 @@ spec:
                         pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
                         type: string
                       status:
-                        description: status of the condition, one of True, False, Unknown.
-                        enum:
-                          - "True"
-                          - "False"
-                          - Unknown
+                        description: status of the condition, one of True, False,
+                          Unknown.
+                        enum: ['True', 'False', Unknown]
                         type: string
                       type:
                         description: type of condition in CamelCase or in foo.example.com/CamelCase.
                         maxLength: 316
                         pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
                         type: string
-                    required:
-                      - lastTransitionTime
-                      - message
-                      - reason
-                      - status
-                      - type
+                    required: [lastTransitionTime, message, reason, status, type]
                     type: object
                   type: array
-                  x-kubernetes-list-map-keys:
-                    - type
+                  x-kubernetes-list-map-keys: [type]
                   x-kubernetes-list-type: map
                 desiredOptimizedAlloc:
-                  description: DesiredOptimizedAlloc indicates the target optimized allocation based on autoscaling logic.
+                  description: DesiredOptimizedAlloc indicates the target optimized
+                    allocation based on autoscaling logic.
                   properties:
                     accelerator:
                       description: |-
                         Accelerator is the type of accelerator for the optimized allocation.
-
                         Deprecated: This field is deprecated and will be removed in a future version. Use node selector or node affinity from scale target instead.
                       type: string
                     lastRunTime:
-                      description: LastRunTime is the timestamp of the last optimization run.
+                      description: LastRunTime is the timestamp of the last optimization
+                        run.
                       format: date-time
                       type: string
                     numReplicas:

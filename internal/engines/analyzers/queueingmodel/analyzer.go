@@ -274,6 +274,7 @@ func (a *QueueingModelAnalyzer) computeAllVariantCapacities(
 	// GpuMemoryUtilization is read from ReplicaMetrics (populated from deployment args).
 	for variantName, rms := range variantMetrics {
 		a.observationStore.UpdateFromReplicaMetrics(
+			ctx,
 			namespace, modelID, variantName,
 			rms,
 			analyzerconstants.ComputeIntensityAlpha,

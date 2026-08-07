@@ -78,6 +78,7 @@ func (a *SaturationAnalyzer) Analyze(ctx context.Context, input interfaces.Analy
 	}
 	for variantName, rms := range metricsByVariant {
 		a.observationStore.UpdateFromReplicaMetrics(
+			ctx,
 			input.Namespace, input.ModelID, variantName,
 			rms,
 			analyzerconstants.ComputeIntensityAlpha,

@@ -1,0 +1,46 @@
+---
+# Service for sample-deployment — exposes the simulator's /metrics endpoint
+# so Prometheus can scrape vLLM metrics required by the WVA vertical-scaling engine.
+apiVersion: v1
+kind: Service
+metadata:
+  name: sample-deployment
+  namespace: llm-d-sim
+  labels:
+    app: dev-model-decode
+    llm-d.ai/inferenceServing: 'true'
+spec:
+  type: ClusterIP
+  selector:
+    app: dev-model-decode
+    llm-d.ai/inferenceServing: 'true'
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      protocol: TCP
+---
+# ServiceMonitor — tells Prometheus Operator to scrape the Service above.
+# The `release` label must match your Prometheus CR's serviceMonitorSelector.
+# The ServiceMonitor lives in the monitoring namespace; namespaceSelector
+# targets llm-d-sim where the pods actually run.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: sample-deployment-monitor
+  namespace: workload-variant-autoscaler-monitoring
+  labels:
+    app: dev-model-decode
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames: [llm-d-sim]
+  selector:
+    matchLabels:
+      app: dev-model-decode
+      llm-d.ai/inferenceServing: 'true'
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s

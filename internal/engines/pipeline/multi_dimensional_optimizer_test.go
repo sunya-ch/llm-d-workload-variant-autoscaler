@@ -25,9 +25,9 @@ var _ = Describe("MultiDimensionalOptimizer", func() {
 
 	makeReq := func(variants []interfaces.VariantCapacity, states []interfaces.VariantReplicaState, requiredCap float64) ModelScalingRequest {
 		r := &interfaces.AnalyzerResult{
-			ModelID:          "model-1",
-			Namespace:        "default",
-			RequiredCapacity: requiredCap,
+			ModelID:           "model-1",
+			Namespace:         "default",
+			RequiredCapacity:  requiredCap,
 			VariantCapacities: variants,
 		}
 		return ModelScalingRequest{
@@ -120,8 +120,8 @@ var _ = Describe("MultiDimensionalOptimizer", func() {
 			}
 			// spare capacity → scale-down path
 			req := ModelScalingRequest{
-				ModelID:   "model-1",
-				Namespace: "default",
+				ModelID:       "model-1",
+				Namespace:     "default",
 				VariantStates: states,
 				AnalyzerResults: []NamedAnalyzerResult{{
 					Name: interfaces.SaturationAnalyzerName,

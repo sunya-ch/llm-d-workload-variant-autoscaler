@@ -1,0 +1,24 @@
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: sample-deployment-hpa
+  namespace: llm-d-sim
+  annotations:
+    llm-d.ai/managed: 'true'
+    llm-d.ai/model-id: test-model  # must match --model arg and VPA's model-id
+    llm-d.ai/variant-cost: '10.0'
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: sample-deployment
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 80

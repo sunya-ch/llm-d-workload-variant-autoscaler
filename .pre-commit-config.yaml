@@ -1,9 +1,9 @@
+---
 # Canonical pre-commit configuration for llm-d repos
 # Based on template from llm-d/llm-d-infra
 #
 # Install: pip install pre-commit && pre-commit install
 # Run all: pre-commit run --all-files
-
 repos:
   # General file hygiene hooks
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -47,6 +47,12 @@ repos:
     hooks:
       - id: markdownlint
         args: [--fix]
+
+  # YAML auto-fix
+  - repo: https://github.com/lyz-code/yamlfix
+    rev: 1.17.0
+    hooks:
+      - id: yamlfix
 
   # YAML linting
   - repo: https://github.com/adrienverge/yamllint

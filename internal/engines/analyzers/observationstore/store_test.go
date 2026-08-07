@@ -1,6 +1,7 @@
 package observationstore
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ const (
 
 var _ = Describe("VariantObservationStore", func() {
 	var s *VariantObservationStore
+	var ctx = context.Background()
 
 	BeforeEach(func() {
 		s = NewVariantObservationStore()
@@ -79,7 +81,7 @@ var _ = Describe("VariantObservationStore", func() {
 					{PromptTokenRate: 10.0, GenerationTokenRate: 20.0}, // I_live = 10 + 0.1*20 = 12
 					{PromptTokenRate: 20.0, GenerationTokenRate: 40.0}, // I_live = 20 + 0.1*40 = 24
 				}
-				s.UpdateFromReplicaMetrics("ns", "model", "v1", rms, testAlpha, testBytesPerKVToken)
+				s.UpdateFromReplicaMetrics(ctx, "ns", "model", "v1", rms, testAlpha, testBytesPerKVToken)
 
 				got := s.Get("ns", "model", "v1")
 				Expect(got).NotTo(BeNil())
@@ -87,7 +89,7 @@ var _ = Describe("VariantObservationStore", func() {
 			})
 
 			It("is zero when replica list is empty", func() {
-				s.UpdateFromReplicaMetrics("ns", "model", "v1", nil, testAlpha, testBytesPerKVToken)
+				s.UpdateFromReplicaMetrics(ctx, "ns", "model", "v1", nil, testAlpha, testBytesPerKVToken)
 				Expect(s.Get("ns", "model", "v1").ComputeIntensity).To(Equal(0.0))
 			})
 		})
@@ -97,7 +99,7 @@ var _ = Describe("VariantObservationStore", func() {
 				rms := []interfaces.ReplicaMetrics{
 					{PromptTokenRate: 50.0, QueueLength: 0},
 				}
-				s.UpdateFromReplicaMetrics("ns", "model", "v1", rms, testAlpha, testBytesPerKVToken)
+				s.UpdateFromReplicaMetrics(ctx, "ns", "model", "v1", rms, testAlpha, testBytesPerKVToken)
 				Expect(s.Get("ns", "model", "v1").MaxComputeIntensity).To(Equal(0.0))
 			})
 
@@ -105,16 +107,16 @@ var _ = Describe("VariantObservationStore", func() {
 				rms := []interfaces.ReplicaMetrics{
 					{PromptTokenRate: 100.0, QueueLength: 5},
 				}
-				s.UpdateFromReplicaMetrics("ns", "model", "v1", rms, testAlpha, testBytesPerKVToken)
+				s.UpdateFromReplicaMetrics(ctx, "ns", "model", "v1", rms, testAlpha, testBytesPerKVToken)
 				Expect(s.Get("ns", "model", "v1").MaxComputeIntensity).To(Equal(100.0))
 			})
 
 			It("holds the high-water mark and does not decrease", func() {
 				rms := []interfaces.ReplicaMetrics{{PromptTokenRate: 100.0, QueueLength: 5}}
-				s.UpdateFromReplicaMetrics("ns", "model", "v1", rms, testAlpha, testBytesPerKVToken)
+				s.UpdateFromReplicaMetrics(ctx, "ns", "model", "v1", rms, testAlpha, testBytesPerKVToken)
 
 				rms2 := []interfaces.ReplicaMetrics{{PromptTokenRate: 30.0, QueueLength: 2}}
-				s.UpdateFromReplicaMetrics("ns", "model", "v1", rms2, testAlpha, testBytesPerKVToken)
+				s.UpdateFromReplicaMetrics(ctx, "ns", "model", "v1", rms2, testAlpha, testBytesPerKVToken)
 
 				Expect(s.Get("ns", "model", "v1").MaxComputeIntensity).To(Equal(100.0))
 			})
@@ -125,7 +127,7 @@ var _ = Describe("VariantObservationStore", func() {
 				rms := []interfaces.ReplicaMetrics{
 					{TotalKvCapacityTokens: 1000},
 				}
-				s.UpdateFromReplicaMetrics("ns", "model", "v1", rms, testAlpha, testBytesPerKVToken)
+				s.UpdateFromReplicaMetrics(ctx, "ns", "model", "v1", rms, testAlpha, testBytesPerKVToken)
 
 				// util=0.9 (default): 1000 × (1-0.9)/0.9 × 128 ≈ 14222.2
 				want := float64(1000) * (1 - 0.9) / 0.9 * testBytesPerKVToken
@@ -136,7 +138,7 @@ var _ = Describe("VariantObservationStore", func() {
 				rms := []interfaces.ReplicaMetrics{
 					{TotalKvCapacityTokens: 1000, GpuMemoryUtilization: 0.85},
 				}
-				s.UpdateFromReplicaMetrics("ns", "model", "v1", rms, testAlpha, testBytesPerKVToken)
+				s.UpdateFromReplicaMetrics(ctx, "ns", "model", "v1", rms, testAlpha, testBytesPerKVToken)
 
 				// util=0.85: 1000 × (1-0.85)/0.85 × 128 ≈ 22588.2
 				want := float64(1000) * (1 - 0.85) / 0.85 * testBytesPerKVToken
@@ -145,11 +147,11 @@ var _ = Describe("VariantObservationStore", func() {
 
 			It("is never overwritten once set", func() {
 				rms := []interfaces.ReplicaMetrics{{TotalKvCapacityTokens: 1000, GpuMemoryUtilization: 0.9}}
-				s.UpdateFromReplicaMetrics("ns", "model", "v1", rms, testAlpha, testBytesPerKVToken)
+				s.UpdateFromReplicaMetrics(ctx, "ns", "model", "v1", rms, testAlpha, testBytesPerKVToken)
 				firstMW := s.Get("ns", "model", "v1").MemoryWeight
 
 				rms2 := []interfaces.ReplicaMetrics{{TotalKvCapacityTokens: 9999, GpuMemoryUtilization: 0.9}}
-				s.UpdateFromReplicaMetrics("ns", "model", "v1", rms2, testAlpha, testBytesPerKVToken)
+				s.UpdateFromReplicaMetrics(ctx, "ns", "model", "v1", rms2, testAlpha, testBytesPerKVToken)
 				Expect(s.Get("ns", "model", "v1").MemoryWeight).To(Equal(firstMW))
 			})
 		})
@@ -157,22 +159,22 @@ var _ = Describe("VariantObservationStore", func() {
 		Context("BytePerToken", func() {
 			It("stays zero when no deltas are available", func() {
 				rms := []interfaces.ReplicaMetrics{{DeltaCacheBytes: 0, DeltaTokens: 0}}
-				s.UpdateFromReplicaMetrics("ns", "model", "v1", rms, testAlpha, testBytesPerKVToken)
+				s.UpdateFromReplicaMetrics(ctx, "ns", "model", "v1", rms, testAlpha, testBytesPerKVToken)
 				Expect(s.Get("ns", "model", "v1").BytePerToken).To(Equal(0.0))
 			})
 
 			It("is computed as DeltaCacheBytes / DeltaTokens when deltas are available", func() {
 				rms := []interfaces.ReplicaMetrics{{DeltaCacheBytes: 1024.0, DeltaTokens: 8.0}}
-				s.UpdateFromReplicaMetrics("ns", "model", "v1", rms, testAlpha, testBytesPerKVToken)
+				s.UpdateFromReplicaMetrics(ctx, "ns", "model", "v1", rms, testAlpha, testBytesPerKVToken)
 				Expect(s.Get("ns", "model", "v1").BytePerToken).To(Equal(128.0))
 			})
 
 			It("is refreshed each tick when new deltas are available", func() {
 				rms := []interfaces.ReplicaMetrics{{DeltaCacheBytes: 1024.0, DeltaTokens: 8.0}}
-				s.UpdateFromReplicaMetrics("ns", "model", "v1", rms, testAlpha, testBytesPerKVToken)
+				s.UpdateFromReplicaMetrics(ctx, "ns", "model", "v1", rms, testAlpha, testBytesPerKVToken)
 
 				rms2 := []interfaces.ReplicaMetrics{{DeltaCacheBytes: 512.0, DeltaTokens: 8.0}}
-				s.UpdateFromReplicaMetrics("ns", "model", "v1", rms2, testAlpha, testBytesPerKVToken)
+				s.UpdateFromReplicaMetrics(ctx, "ns", "model", "v1", rms2, testAlpha, testBytesPerKVToken)
 				Expect(s.Get("ns", "model", "v1").BytePerToken).To(Equal(64.0))
 			})
 		})
@@ -189,7 +191,7 @@ var _ = Describe("VariantObservationStore", func() {
 						DeltaTokens:           4.0,
 					},
 				}
-				s.UpdateFromReplicaMetrics("ns", "model", "qm-variant", rms, testAlpha, testBytesPerKVToken)
+				s.UpdateFromReplicaMetrics(ctx, "ns", "model", "qm-variant", rms, testAlpha, testBytesPerKVToken)
 
 				got := s.Get("ns", "model", "qm-variant")
 				Expect(got).NotTo(BeNil())

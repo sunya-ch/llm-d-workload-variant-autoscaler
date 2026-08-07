@@ -68,7 +68,7 @@ func (r *ResourceCapacityInventory) Snapshot(ctx context.Context) (
 		return nil, nil
 	}
 
-	claimedTotal := map[string]int64{}     // capacityName → sum claimed across all claims
+	claimedTotal := map[string]int64{} // capacityName → sum claimed across all claims
 	claimedByVariant = map[string]map[string]int64{}
 
 	for i := range claimList.Items {

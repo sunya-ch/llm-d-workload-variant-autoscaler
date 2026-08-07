@@ -330,7 +330,6 @@ func annotationSourcedVariants(ctx context.Context, k8sClient client.Client) ([]
 	} else {
 		for i := range vpaList.Items {
 			vpa := &vpaList.Items[i]
-			logger.Info("Processing VPA", "name", vpa.Name, "isManaged", annotations.IsManaged(vpa), "hasPrometheues", HasPrometheusRecommender(vpa))
 			if !annotations.IsManaged(vpa) || !vpa.DeletionTimestamp.IsZero() || !HasPrometheusRecommender(vpa) {
 				continue
 			}
@@ -345,8 +344,6 @@ func annotationSourcedVariants(ctx context.Context, k8sClient client.Client) ([]
 			}
 			key := fmt.Sprintf("%s/%s/%s", vaFromVPA.Namespace,
 				vaFromVPA.Spec.ScaleTargetRef.Kind, vaFromVPA.Spec.ScaleTargetRef.Name)
-			logger.Info(fmt.Sprintf("%s/%s/%s", vaFromVPA.Namespace,
-				vaFromVPA.Spec.ScaleTargetRef.Kind, vaFromVPA.Spec.ScaleTargetRef.Name))
 			if existing, ok := byTarget[key]; ok {
 				// Merge: keep horizontal bounds from HPA/SO, add VPA's ResourceClaimPolicy.
 				existing.Spec.ResourceClaimPolicy = vaFromVPA.Spec.ResourceClaimPolicy

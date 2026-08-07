@@ -1,0 +1,59 @@
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sample-deployment-load
+  namespace: llm-d-sim
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      dnsConfig:
+        options:
+          - name: ndots
+            value: '2'
+      containers:
+        - name: load-generator
+          image: quay.io/curl/curl:8.11.1
+          command: [/bin/sh, -c]
+          args:
+            - |
+              set -e
+              CURL_TIMEOUT=180
+              MAX_TOKENS=400
+              BATCH_SLEEP=0.5
+              MAX_RETRIES=24
+              RETRY_DELAY=5
+              echo "Waiting for service..."
+              CONNECTED=false
+              BASE_URL=$(echo "$TARGET_URL" | sed 's|/v1/.*||')
+              for i in $(seq 1 $MAX_RETRIES); do
+                if curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/v1/models" 2>/dev/null | grep -q 200; then
+                  CONNECTED=true; break
+                fi
+                sleep $RETRY_DELAY
+              done
+              [ "$CONNECTED" = "true" ] || { echo "Cannot connect"; exit 1; }
+              SENT=0
+              while [ $SENT -lt $TOTAL_REQUESTS ]; do
+                for i in $(seq 1 $BATCH_SIZE); do
+                  [ $SENT -ge $TOTAL_REQUESTS ] && break
+                  (curl -s -o /dev/null --max-time $CURL_TIMEOUT -X POST "$TARGET_URL" \
+                    -H "Content-Type: application/json" \
+                    -d "{\"model\":\"$MODEL_ID\",\"messages\":[{\"role\":\"user\",\"content\":\"Explain machine learning in detail.\"}],\"max_tokens\":$MAX_TOKENS}" || true) &
+                  SENT=$((SENT + 1))
+                done
+                echo "Sent $SENT / $TOTAL_REQUESTS"
+                sleep $BATCH_SLEEP
+              done
+              wait
+              echo "Done"
+          env:
+            - name: TOTAL_REQUESTS
+              value: '200'
+            - name: BATCH_SIZE
+              value: '10'
+            - name: MODEL_ID
+              value: test-model  # matches --model arg in deployment.yaml
+            - name: TARGET_URL
+              value: http://sample-deployment.llm-d-sim.svc.cluster.local:8000/v1/chat/completions

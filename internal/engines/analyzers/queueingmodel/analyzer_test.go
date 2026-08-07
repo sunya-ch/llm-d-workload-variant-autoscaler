@@ -72,11 +72,11 @@ var _ = Describe("QMConfig SLO factor helpers", func() {
 
 var _ = Describe("computeAllVariantCapacities VerticalHint", func() {
 	var (
-		a       *QueueingModelAnalyzer
+		a        *QueueingModelAnalyzer
 		obsStore *observationstore.VariantObservationStore
-		ctx     context.Context
-		slo     *SLOTarget
-		qmc     *QMConfig
+		ctx      context.Context
+		slo      *SLOTarget
+		qmc      *QMConfig
 	)
 
 	BeforeEach(func() {

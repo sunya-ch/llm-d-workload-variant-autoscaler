@@ -1,0 +1,39 @@
+---
+# Annotation-based WVA discovery — no VariantAutoscaling CRD required.
+# WVA discovers this VPA via the llm-d.ai/managed annotation and
+# exposes
+# - wva_desired_capacities{variant_name="sample-deployment",namespace="llm-d-sim",capacity="compute"}
+# - wva_desired_capacities{variant_name="sample-deployment",namespace="llm-d-sim",capacity="memory"}
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  annotations:
+    llm-d.ai/managed: 'true'
+    llm-d.ai/model-id: test-model
+    llm-d.ai/variant-cost: '10.0'
+  name: sample-deployment-vpa-scaler
+  namespace: llm-d-sim
+  labels:
+    app.kubernetes.io/instance: llm-d-sim-demo
+    scaler: vpa-workload-variant-autoscaler
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: sample-deployment
+  recommenders:
+    - name: prometheus
+  resourcePolicy:
+    resourceClaimPolicies:
+      - claimTemplateName: gpu-claim
+        deviceClassName: vgpu.example.com
+        controlledCapacities: [compute, memory]
+        minAllowed:
+          compute: '10'
+          memory: 1Gi
+        maxAllowed:
+          compute: '100'
+          memory: 16Gi
+  updatePolicy:
+    updateMode: DRARecreate
+    minReplicas: 1

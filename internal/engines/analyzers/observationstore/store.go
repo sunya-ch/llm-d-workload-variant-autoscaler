@@ -1,8 +1,11 @@
 package observationstore
 
 import (
+	"context"
 	"sync"
 	"time"
+
+	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/interfaces"
 )
@@ -98,15 +101,28 @@ func (s *VariantObservationStore) EvictStale(timeout time.Duration) int {
 //     never overwritten once set. U = rm.GpuMemoryUtilization (falls back to 0.9 when zero).
 //   - BytePerToken: DeltaCacheBytes / DeltaTokens; refreshed each tick when both > 0.
 func (s *VariantObservationStore) UpdateFromReplicaMetrics(
+	ctx context.Context,
 	namespace, modelID, variantName string,
 	replicaMetrics []interfaces.ReplicaMetrics,
 	alpha, bytesPerKVToken float64,
 ) {
+	logger := ctrl.LoggerFrom(ctx)
+
 	existing := s.Get(namespace, modelID, variantName)
 	var maxI, memWeight, bpt float64
 	if existing != nil {
 		maxI, memWeight, bpt = existing.MaxComputeIntensity, existing.MemoryWeight, existing.BytePerToken
 	}
+
+	logger.Info("VariantObservationStore.UpdateFromReplicaMetrics",
+		"namespace", namespace,
+		"modelID", modelID,
+		"variant", variantName,
+		"replicaCount", len(replicaMetrics),
+		"prevMaxComputeIntensity", maxI,
+		"prevMemoryWeight", memWeight,
+		"prevBytePerToken", bpt,
+	)
 
 	var iLiveSum float64
 	var iLiveCount int
@@ -114,6 +130,20 @@ func (s *VariantObservationStore) UpdateFromReplicaMetrics(
 		iLive := rm.PromptTokenRate + alpha*rm.GenerationTokenRate
 		iLiveSum += iLive
 		iLiveCount++
+
+		logger.Info("VariantObservationStore replica input",
+			"variant", variantName,
+			"pod", rm.PodName,
+			"promptTokenRate", rm.PromptTokenRate,
+			"generationTokenRate", rm.GenerationTokenRate,
+			"iLive", iLive,
+			"queueLength", rm.QueueLength,
+			"totalKvCapacityTokens", rm.TotalKvCapacityTokens,
+			"gpuMemoryUtilization", rm.GpuMemoryUtilization,
+			"deltaCacheBytes", rm.DeltaCacheBytes,
+			"deltaTokens", rm.DeltaTokens,
+		)
+
 		// I_max: high-water under non-empty queue (spec: vllm:num_requests_waiting > 0)
 		if rm.QueueLength > 0 && iLive > maxI {
 			maxI = iLive
@@ -134,6 +164,16 @@ func (s *VariantObservationStore) UpdateFromReplicaMetrics(
 	if iLiveCount > 0 {
 		currentI = iLiveSum / float64(iLiveCount)
 	}
+
+	logger.Info("VariantObservationStore updated",
+		"namespace", namespace,
+		"modelID", modelID,
+		"variant", variantName,
+		"computeIntensity", currentI,
+		"maxComputeIntensity", maxI,
+		"memoryWeight", memWeight,
+		"bytePerToken", bpt,
+	)
 
 	s.Update(namespace, modelID, variantName, VariantObservation{
 		ComputeIntensity:    currentI,

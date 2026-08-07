@@ -990,11 +990,11 @@ func (m *MetricsEmitter) RecordVerticalScalingMetrics(
 	}
 	for capName, capVal := range capacityValues {
 		labels := prometheus.Labels{
-			constants.LabelVariantName:    variantName,
-			constants.LabelNamespace:      namespace,
-			constants.LabelModelID:        modelID,
+			constants.LabelVariantName:     variantName,
+			constants.LabelNamespace:       namespace,
+			constants.LabelModelID:         modelID,
 			constants.LabelAcceleratorType: acceleratorType,
-			constants.LabelCapacity:       capName,
+			constants.LabelCapacity:        capName,
 		}
 		if controllerInstance != "" {
 			labels[constants.LabelControllerInstance] = controllerInstance

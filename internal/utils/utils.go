@@ -374,9 +374,12 @@ func GetProductKeys() []string {
 	return slices.Sorted(maps.Keys(labels))
 }
 
-// GetAcceleratorNameFromScaleTarget extracts GPU product information from a scale target's nodeSelector or nodeAffinity.
+// GetAcceleratorNameFromScaleTarget extracts GPU product information from a scale target's nodeSelector,
+// nodeAffinity, or DRA ResourceClaimTemplate device class name.
 // GPU product information is checked against keys listed in constants.VendorResources.
-// If not found in nodeSelector or nodeAffinity, falls back to the AcceleratorNameLabel on the VariantAutoscaling.
+// For DRA workloads that use ResourceClaimTemplate (no nodeSelector/nodeAffinity), the
+// DeviceClassName from the first device request in the template is used as the accelerator name.
+// If not found in any of those, falls back to the AcceleratorNameLabel on the VariantAutoscaling.
 // Returns the first matching value found, or constants.DefaultAcceleratorName ("unknown") if none are found.
 // The sentinel allows callers to proceed without hard-stopping; the GPU limiter resolves
 // it to the real type in homogeneous clusters before it reaches status or metrics.
@@ -400,6 +403,17 @@ func GetAcceleratorNameFromScaleTarget(va *llmdVariantAutoscalingV1alpha1.Varian
 			if podTemplateSpec.Spec.Affinity != nil && podTemplateSpec.Spec.Affinity.NodeAffinity != nil {
 				if val := extractGPUFromNodeAffinity(podTemplateSpec.Spec.Affinity.NodeAffinity, prodKeys); val != "" {
 					return val
+				}
+			}
+		}
+
+		// For DRA workloads: use the DeviceClassName from the ResourceClaimTemplate.
+		// DRA pods select GPUs via device class rather than nodeSelector/nodeAffinity, so
+		// the DeviceClassName is the canonical accelerator identifier in this configuration.
+		if rct := scaleTarget.GetLeaderResourceClaimTemplate(); rct != nil {
+			for _, req := range rct.Spec.Spec.Devices.Requests {
+				if req.Exactly != nil && req.Exactly.DeviceClassName != "" {
+					return req.Exactly.DeviceClassName
 				}
 			}
 		}

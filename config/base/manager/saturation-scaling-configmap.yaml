@@ -1,3 +1,4 @@
+---
 apiVersion: v1
 kind: ConfigMap
 # This ConfigMap defines saturation-based scaling thresholds for model variants.
@@ -16,7 +17,7 @@ metadata:
     app.kubernetes.io/name: workload-variant-autoscaler
 data:
   # Global defaults applied to all variants unless overridden
-  default: |
+  default: |-
     kvCacheThreshold: 0.80
     queueLengthThreshold: 5
     kvSpareTrigger: 0.1
@@ -24,3 +25,6 @@ data:
     # Enable GPU limiter to constrain scaling based on available cluster resources
     # When true, scale-up decisions are limited by available GPU capacity
     enableLimiter: false
+    # Use the token-based V2 saturation analyzer (required for vertical scaling signals).
+    # V1 (default when unset) does not call VariantObservationStore and produces no vertical hints.
+    analyzerName: saturation

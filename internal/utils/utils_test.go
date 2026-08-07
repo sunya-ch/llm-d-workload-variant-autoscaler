@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	llmdVariantAutoscalingV1alpha1 "github.com/llm-d/llm-d-workload-variant-autoscaler/api/v1alpha1"
@@ -358,6 +359,107 @@ func TestGetAcceleratorNameFromScaleTarget(t *testing.T) {
 				scaleTarget = scaletarget.NewDeploymentAccessor(tc.deployment)
 			}
 			result := GetAcceleratorNameFromScaleTarget(tc.va, scaleTarget)
+			assert.Equal(t, tc.expected, result)
+		})
+	}
+}
+
+func TestGetAcceleratorNameFromScaleTarget_DRA(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		va       *llmdVariantAutoscalingV1alpha1.VariantAutoscaling
+		rct      *resourcev1.ResourceClaimTemplate
+		expected string
+	}{
+		{
+			name: "dra_deviceclass_name_returned",
+			va:   &llmdVariantAutoscalingV1alpha1.VariantAutoscaling{},
+			rct: &resourcev1.ResourceClaimTemplate{
+				Spec: resourcev1.ResourceClaimTemplateSpec{
+					Spec: resourcev1.ResourceClaimSpec{
+						Devices: resourcev1.DeviceClaim{
+							Requests: []resourcev1.DeviceRequest{
+								{
+									Name:    "gpu",
+									Exactly: &resourcev1.ExactDeviceRequest{DeviceClassName: "gpu.nvidia.com"},
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: "gpu.nvidia.com",
+		},
+		{
+			name: "dra_deviceclass_takes_precedence_over_va_label",
+			va: &llmdVariantAutoscalingV1alpha1.VariantAutoscaling{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{AcceleratorNameLabel: "H100"},
+				},
+			},
+			rct: &resourcev1.ResourceClaimTemplate{
+				Spec: resourcev1.ResourceClaimTemplateSpec{
+					Spec: resourcev1.ResourceClaimSpec{
+						Devices: resourcev1.DeviceClaim{
+							Requests: []resourcev1.DeviceRequest{
+								{
+									Name:    "gpu",
+									Exactly: &resourcev1.ExactDeviceRequest{DeviceClassName: "gpu.amd.com"},
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: "gpu.amd.com",
+		},
+		{
+			name: "dra_no_exact_request_falls_back_to_va_label",
+			va: &llmdVariantAutoscalingV1alpha1.VariantAutoscaling{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{AcceleratorNameLabel: "H100"},
+				},
+			},
+			rct: &resourcev1.ResourceClaimTemplate{
+				Spec: resourcev1.ResourceClaimTemplateSpec{
+					Spec: resourcev1.ResourceClaimSpec{
+						Devices: resourcev1.DeviceClaim{
+							Requests: []resourcev1.DeviceRequest{
+								{Name: "gpu"}, // Exactly is nil
+							},
+						},
+					},
+				},
+			},
+			expected: "H100",
+		},
+		{
+			name: "dra_nil_rct_falls_back_to_va_label",
+			va: &llmdVariantAutoscalingV1alpha1.VariantAutoscaling{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{AcceleratorNameLabel: "T4"},
+				},
+			},
+			rct:      nil,
+			expected: "T4",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			deploy := &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{}, // no nodeSelector/nodeAffinity
+					},
+				},
+			}
+			accessor := scaletarget.NewDeploymentAccessorWithClaim(deploy, tc.rct)
+			result := GetAcceleratorNameFromScaleTarget(tc.va, accessor)
 			assert.Equal(t, tc.expected, result)
 		})
 	}

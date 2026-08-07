@@ -367,19 +367,41 @@ func logAnalyzerResult(ctx context.Context, modelID, namespace string, nr pipeli
 		return
 	}
 	logger := ctrl.LoggerFrom(ctx)
+	logger.Info("logAnalyzerResult")
 
+	type verticalHintEntry struct {
+		ScaleUpPRC   float64  `json:"scaleUpPRC"`
+		ScaleDownPRC float64  `json:"scaleDownPRC"`
+		Compute      *float64 `json:"compute,omitempty"`
+		MemoryBytes  *int64   `json:"memoryBytes,omitempty"`
+	}
 	type variantEntry struct {
-		Name   string  `json:"name"`
-		PRC    float64 `json:"prc"`
-		Reason string  `json:"reason,omitempty"`
+		Name         string             `json:"name"`
+		PRC          float64            `json:"prc"`
+		Reason       string             `json:"reason,omitempty"`
+		VerticalHint *verticalHintEntry `json:"verticalHint,omitempty"`
 	}
 	variants := make([]variantEntry, 0, len(nr.Result.VariantCapacities))
 	for _, vc := range nr.Result.VariantCapacities {
-		variants = append(variants, variantEntry{
+		e := variantEntry{
 			Name:   vc.VariantName,
 			PRC:    vc.PerReplicaCapacity,
 			Reason: vc.Reason,
-		})
+		}
+		if vc.VerticalHint != nil {
+			vh := &verticalHintEntry{
+				ScaleUpPRC:   vc.VerticalHint.ScaleUpPerReplicaCapacity,
+				ScaleDownPRC: vc.VerticalHint.ScaleDownPerReplicaCapacity,
+			}
+			if vc.VerticalHint.DemandPerReplicaResource != nil {
+				cf := vc.VerticalHint.DemandPerReplicaResource.ComputeFraction
+				mb := vc.VerticalHint.DemandPerReplicaResource.MemoryBytes
+				vh.Compute = &cf
+				vh.MemoryBytes = &mb
+			}
+			e.VerticalHint = vh
+		}
+		variants = append(variants, e)
 	}
 
 	logger.Info("analyzer-result",
