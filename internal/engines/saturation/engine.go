@@ -1017,6 +1017,7 @@ func (e *Engine) BuildVariantStates(
 			MinReplicas:            minReplicas,
 			MaxReplicas:            maxReplicas,
 			VerticalScalingEnabled: va.Spec.ResourceClaimPolicy != nil,
+			ResourceClaimPolicy:    va.Spec.ResourceClaimPolicy,
 		})
 	}
 

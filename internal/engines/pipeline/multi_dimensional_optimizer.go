@@ -111,6 +111,13 @@ func (o *MultiDimensionalOptimizer) Optimize(
 //
 // On success: draAvailable is decremented (budget consumed).
 // On insufficient headroom or draAvailable==nil: PRC left unchanged; no vertical target recorded.
+//
+// OOM safety: demand.MemoryBytes is floored at the current per-replica claimed
+// allocation (currentClaimed/readyCount) before the delta is computed. This
+// prevents recommending a resource slice smaller than what the pod currently
+// holds — which would cause an OOM kill on the next pod restart if the
+// empirical MemoryWeight derived from the KV-cache ratio underestimates the
+// real model weight memory.
 func applyVerticalScaleUpWithDRA(
 	variants []interfaces.VariantCapacity,
 	stateMap map[string]interfaces.VariantReplicaState,
@@ -160,6 +167,17 @@ func applyVerticalScaleUpWithDRA(
 				currentClaimed += v
 			}
 		}
+
+		// OOM safety floor: ensure demand.MemoryBytes is never less than the
+		// current per-replica allocation. currentClaimed is in milli-units;
+		// convert to bytes (÷1000) for comparison with demand.MemoryBytes.
+		// Work on a local copy so the original hint is not mutated.
+		currentPerReplicaBytes := currentClaimed / readyCount / 1000
+		effectiveDemand := *demand
+		if currentPerReplicaBytes > 0 && effectiveDemand.MemoryBytes < currentPerReplicaBytes {
+			effectiveDemand.MemoryBytes = currentPerReplicaBytes
+		}
+		demand = &effectiveDemand
 
 		// deltaTotal = (target memory − current claimed) × replicas.
 		// demand.MemoryBytes is in raw bytes; DRA capacity is in milli-units.

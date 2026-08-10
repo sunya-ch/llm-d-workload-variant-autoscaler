@@ -6,6 +6,7 @@ import (
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 )
 
 // DecisionReason categorizes the reason for a scaling decision.
@@ -454,6 +455,11 @@ type VariantReplicaState struct {
 	// (i.e., va.Spec.ResourceClaimPolicy != nil). The optimizer only acts on
 	// VerticalHint when this flag is true.
 	VerticalScalingEnabled bool
+	// ResourceClaimPolicy is the DRA resource claim policy for this variant, sourced
+	// from the VPA spec.resourcePolicy.resourceClaimPolicies[0]. Nil when vertical
+	// scaling is not configured. Used by analyzers to clamp DemandPerReplicaResource
+	// to [MinAllowed, MaxAllowed] via applyStepPolicy.
+	ResourceClaimPolicy *vpav1.ResourceClaimPolicy
 }
 
 // SaturationAnalyzer analyzes replica saturation metrics and recommends scaling decisions

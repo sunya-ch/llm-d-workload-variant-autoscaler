@@ -7,12 +7,15 @@ import (
 	"math"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
+
 	analyzerconstants "github.com/llm-d/llm-d-workload-variant-autoscaler/internal/engines/analyzers"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/engines/analyzers/observationstore"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/engines/analyzers/queueingmodel/tuner"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/interfaces"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/pkg/analyzer"
-	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 // QueueingModelAnalyzer implements interfaces.Analyzer.
@@ -451,6 +454,9 @@ func (a *QueueingModelAnalyzer) computeAllVariantCapacities(
 						iTarget := scaleUpRPS * (wm.avgInputTokens + analyzerconstants.ComputeIntensityAlpha*wm.avgOutputTokens)
 						computeFraction = math.Min(iTarget/obs.MaxComputeIntensity, 1.0)
 					}
+					computeFraction, memoryDemand = clampToPolicyBounds(
+						computeFraction, memoryDemand, variantState.ResourceClaimPolicy,
+					)
 					demand = &interfaces.ResourceRequirement{
 						ComputeFraction: computeFraction,
 						MemoryBytes:     int64(memoryDemand),
@@ -469,6 +475,55 @@ func (a *QueueingModelAnalyzer) computeAllVariantCapacities(
 	}
 
 	return variantCapacities
+}
+
+// clampToPolicyBounds clamps computeFraction and memoryDemand to the bounds
+// declared in the VPA ResourceClaimPolicy's MinAllowed / MaxAllowed maps:
+//
+//   - computeFraction is dimensionless [0,1]; "compute" quantities use MilliValue()/1000
+//     so that "0.8" → 800 milli-units → 0.8.
+//   - memoryDemand is in bytes; "memory" quantities use Value() which returns bytes directly.
+//
+// When policy is nil or a bound is absent the corresponding value is passed through.
+func clampToPolicyBounds(computeFraction, memoryDemand float64, policy *vpav1.ResourceClaimPolicy) (float64, float64) {
+	if policy == nil {
+		return computeFraction, memoryDemand
+	}
+	compute := clampComputeList(computeFraction, policy.MinAllowed, policy.MaxAllowed)
+	memory := clampMemoryList(memoryDemand, policy.MinAllowed, policy.MaxAllowed)
+	return compute, memory
+}
+
+// clampComputeList clamps a dimensionless compute fraction using MilliValue()/1000.
+func clampComputeList(value float64, minAllowed, maxAllowed corev1.ResourceList) float64 {
+	const name = "compute"
+	if q, ok := maxAllowed[corev1.ResourceName(name)]; ok {
+		if max := float64(q.MilliValue()) / 1000.0; value > max {
+			value = max
+		}
+	}
+	if q, ok := minAllowed[corev1.ResourceName(name)]; ok {
+		if min := float64(q.MilliValue()) / 1000.0; value < min {
+			value = min
+		}
+	}
+	return value
+}
+
+// clampMemoryList clamps a byte-valued memory demand using Value() (bytes).
+func clampMemoryList(value float64, minAllowed, maxAllowed corev1.ResourceList) float64 {
+	const name = "memory"
+	if q, ok := maxAllowed[corev1.ResourceName(name)]; ok {
+		if max := float64(q.Value()); value > max {
+			value = max
+		}
+	}
+	if q, ok := minAllowed[corev1.ResourceName(name)]; ok {
+		if min := float64(q.Value()); value < min {
+			value = min
+		}
+	}
+	return value
 }
 
 // createTunerForVariant creates a new tuner instance for a variant.

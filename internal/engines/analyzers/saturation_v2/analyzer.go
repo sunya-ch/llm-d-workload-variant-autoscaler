@@ -7,6 +7,9 @@ import (
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
+
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/config"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/engines/aggregation"
 	analyzerconstants "github.com/llm-d/llm-d-workload-variant-autoscaler/internal/engines/analyzers"
@@ -401,7 +404,7 @@ func (a *SaturationAnalyzer) aggregateByVariant(
 
 			totalCapacity := float64(readyCount) * perReplicaCapacity
 			obs := a.observationStore.Get(namespace, modelID, vs.VariantName)
-			verticalHint = computeVerticalHint(obs, totalDemand, totalCapacity, readyCount)
+			verticalHint = computeVerticalHint(obs, totalDemand, totalCapacity, readyCount, vs.ResourceClaimPolicy)
 		} else if rec := a.capacityStore.Get(namespace, modelID, vs.VariantName); rec != nil && rec.EffectiveCapacity > 0 {
 			// No ready replicas — use stored capacity, enhanced with k2 derivation
 			// for deployment-derived records when workload data is available.
@@ -719,11 +722,15 @@ func median(values []int64) int64 {
 //   - readyCount == 0 (no ready replicas to size against), or
 //   - supply and demand are balanced (nothing to adjust), or
 //   - the observation store lacks memory data (MemoryWeight == 0 and BytePerToken == 0).
+//
+// policy, when non-nil, is used by applyStepPolicy to clamp the compute fraction
+// and memory demand to [MinAllowed, MaxAllowed] from the VPA ResourceClaimPolicy.
 func computeVerticalHint(
 	obs *observationstore.VariantObservation,
 	totalDemand float64,
 	totalCapacity float64,
 	readyCount int,
+	policy *vpav1.ResourceClaimPolicy,
 ) *interfaces.VerticalHint {
 	if obs == nil || obs.MaxComputeIntensity == 0 || readyCount == 0 {
 		return nil
@@ -757,8 +764,9 @@ func computeVerticalHint(
 	}
 	memoryDemand := obs.MemoryWeight + bpt*targetPRC
 
-	// applyStepPolicy: no VPA policy wired yet — pass-through with no clamping.
-	roundedCompute, roundedMemory := applyStepPolicy(computeDemand, memoryDemand)
+	// applyStepPolicy: clamp compute and memory to [MinAllowed, MaxAllowed] from
+	// the VPA ResourceClaimPolicy when available; pass-through otherwise.
+	roundedCompute, roundedMemory := applyStepPolicy(computeDemand, memoryDemand, policy)
 
 	// Derive the final PRC from the rounded memory demand (memory constraint drives
 	// the token count; compute fraction is dimensionless and doesn't produce a PRC).
@@ -784,12 +792,57 @@ func computeVerticalHint(
 	return hint
 }
 
-// applyStepPolicy rounds compute and memory demand to VPA step boundaries.
-// In the initial implementation there is no VPA resource policy wired, so this
-// is a pass-through. The function signature is kept to make the future extension
-// point obvious: accept a policy object and clamp/round to its step grid.
-func applyStepPolicy(computeDemand, memoryDemand float64) (float64, float64) {
-	return computeDemand, memoryDemand
+// applyStepPolicy clamps compute and memory demand to the bounds declared in the
+// VPA ResourceClaimPolicy:
+//
+//   - computeDemand is a fraction in [0,1]. "compute" capacity is expressed as a
+//     dimensionless number in MinAllowed/MaxAllowed (e.g. "0.1"–"1"). MilliValue()
+//     is used so "0.8" → 800 milli-units → 800/1000 = 0.8.
+//   - memoryDemand is in bytes. "memory" capacity uses standard Kubernetes memory
+//     quantities (e.g. "1Gi" = 1073741824 bytes). Value() gives the byte count directly.
+//
+// When policy is nil or a bound is absent the corresponding value is passed through.
+func applyStepPolicy(computeDemand, memoryDemand float64, policy *vpav1.ResourceClaimPolicy) (float64, float64) {
+	if policy == nil {
+		return computeDemand, memoryDemand
+	}
+	compute := clampComputeQuantity(computeDemand, policy.MinAllowed, policy.MaxAllowed)
+	memory := clampMemoryQuantity(memoryDemand, policy.MinAllowed, policy.MaxAllowed)
+	return compute, memory
+}
+
+// clampComputeQuantity clamps a dimensionless compute fraction using MilliValue()/1000
+// so that "0.8" → 800 milli-units → 0.8.
+func clampComputeQuantity(value float64, minAllowed, maxAllowed corev1.ResourceList) float64 {
+	const name = "compute"
+	if q, ok := maxAllowed[corev1.ResourceName(name)]; ok {
+		if max := float64(q.MilliValue()) / 1000.0; value > max {
+			value = max
+		}
+	}
+	if q, ok := minAllowed[corev1.ResourceName(name)]; ok {
+		if min := float64(q.MilliValue()) / 1000.0; value < min {
+			value = min
+		}
+	}
+	return value
+}
+
+// clampMemoryQuantity clamps a byte-valued memory demand using Value() which
+// returns the quantity directly in bytes for standard memory quantities.
+func clampMemoryQuantity(value float64, minAllowed, maxAllowed corev1.ResourceList) float64 {
+	const name = "memory"
+	if q, ok := maxAllowed[corev1.ResourceName(name)]; ok {
+		if max := float64(q.Value()); value > max {
+			value = max
+		}
+	}
+	if q, ok := minAllowed[corev1.ResourceName(name)]; ok {
+		if min := float64(q.Value()); value < min {
+			value = min
+		}
+	}
+	return value
 }
 
 // inversePRC derives the per-replica capacity (tokens) that corresponds to the

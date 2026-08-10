@@ -5,11 +5,30 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/config"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/engines/analyzers/observationstore"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/interfaces"
 )
+
+// makeResourceClaimPolicy builds a minimal ResourceClaimPolicy with the given
+// min/max bounds for "compute" and "memory" capacity dimensions.
+func makeResourceClaimPolicy(minCompute, maxCompute, minMemory, maxMemory resource.Quantity) *vpav1.ResourceClaimPolicy {
+	return &vpav1.ResourceClaimPolicy{
+		ClaimTemplateName: "gpu-claim",
+		MinAllowed: corev1.ResourceList{
+			"compute": minCompute,
+			"memory":  minMemory,
+		},
+		MaxAllowed: corev1.ResourceList{
+			"compute": maxCompute,
+			"memory":  maxMemory,
+		},
+	}
+}
 
 var _ = Describe("SaturationAnalyzer", func() {
 	var (
@@ -1432,21 +1451,21 @@ var _ = Describe("computeVerticalHint", func() {
 
 	Describe("nil / not-bootstrapped guards", func() {
 		It("returns nil when obs is nil", func() {
-			Expect(computeVerticalHint(nil, 2000, 1000, 2)).To(BeNil())
+			Expect(computeVerticalHint(nil, 2000, 1000, 2, nil)).To(BeNil())
 		})
 
 		It("returns nil when MaxComputeIntensity is zero (not yet bootstrapped)", func() {
 			obs := bootstrappedObs()
 			obs.MaxComputeIntensity = 0
-			Expect(computeVerticalHint(obs, 2000, 1000, 2)).To(BeNil())
+			Expect(computeVerticalHint(obs, 2000, 1000, 2, nil)).To(BeNil())
 		})
 
 		It("returns nil when readyCount is zero", func() {
-			Expect(computeVerticalHint(bootstrappedObs(), 2000, 1000, 0)).To(BeNil())
+			Expect(computeVerticalHint(bootstrappedObs(), 2000, 1000, 0, nil)).To(BeNil())
 		})
 
 		It("returns nil when demand equals capacity (balanced)", func() {
-			Expect(computeVerticalHint(bootstrappedObs(), 1000, 1000, 2)).To(BeNil())
+			Expect(computeVerticalHint(bootstrappedObs(), 1000, 1000, 2, nil)).To(BeNil())
 		})
 	})
 
@@ -1454,14 +1473,14 @@ var _ = Describe("computeVerticalHint", func() {
 		It("sets ScaleUpPerReplicaCapacity when demand > capacity", func() {
 			// totalDemand=2000, totalCapacity=1000, readyCount=2
 			// scaleUpPRC = 2000/2 = 1000 tokens
-			hint := computeVerticalHint(bootstrappedObs(), 2000, 1000, 2)
+			hint := computeVerticalHint(bootstrappedObs(), 2000, 1000, 2, nil)
 			Expect(hint).NotTo(BeNil())
 			Expect(hint.ScaleUpPerReplicaCapacity).To(BeNumerically(">", 0))
 			Expect(hint.ScaleDownPerReplicaCapacity).To(Equal(0.0))
 		})
 
 		It("populates DemandPerReplicaResource with compute fraction and memory bytes", func() {
-			hint := computeVerticalHint(bootstrappedObs(), 2000, 1000, 2)
+			hint := computeVerticalHint(bootstrappedObs(), 2000, 1000, 2, nil)
 			Expect(hint).NotTo(BeNil())
 			Expect(hint.DemandPerReplicaResource).NotTo(BeNil())
 			// ComputeFraction = 50/100 = 0.5 (clamped to [0,1])
@@ -1473,7 +1492,7 @@ var _ = Describe("computeVerticalHint", func() {
 		It("clamps ComputeFraction to 1.0 when ComputeIntensity > MaxComputeIntensity", func() {
 			obs := bootstrappedObs()
 			obs.ComputeIntensity = 200.0 // exceeds max
-			hint := computeVerticalHint(obs, 2000, 1000, 2)
+			hint := computeVerticalHint(obs, 2000, 1000, 2, nil)
 			Expect(hint).NotTo(BeNil())
 			Expect(hint.DemandPerReplicaResource.ComputeFraction).To(Equal(1.0))
 		})
@@ -1481,7 +1500,7 @@ var _ = Describe("computeVerticalHint", func() {
 		It("uses BytesPerKVToken fallback when BytePerToken is zero", func() {
 			obs := bootstrappedObs()
 			obs.BytePerToken = 0
-			hint := computeVerticalHint(obs, 2000, 1000, 2)
+			hint := computeVerticalHint(obs, 2000, 1000, 2, nil)
 			Expect(hint).NotTo(BeNil())
 			// memory = 1_000_000 + 128*1000 = 1_128_000 (same as default bpt=128)
 			Expect(hint.DemandPerReplicaResource.MemoryBytes).To(Equal(int64(1_128_000)))
@@ -1491,28 +1510,82 @@ var _ = Describe("computeVerticalHint", func() {
 			obs := bootstrappedObs()
 			// PRC = (memoryDemand - MemoryWeight) / bpt
 			//     = (1_128_000 - 1_000_000) / 128 = 1000
-			hint := computeVerticalHint(obs, 2000, 1000, 2)
+			hint := computeVerticalHint(obs, 2000, 1000, 2, nil)
 			Expect(hint).NotTo(BeNil())
 			Expect(hint.ScaleUpPerReplicaCapacity).To(BeNumerically("~", 1000.0, 1e-9))
+		})
+
+		It("clamps MemoryBytes to maxAllowed.memory from policy", func() {
+			// bootstrappedObs: MemoryWeight=1_000_000, BytePerToken=128, scaleUpPRC=1000
+			// unclamped memoryDemand = 1_000_000 + 128*1000 = 1_128_000
+			// maxAllowed.memory = 1_100_000 → clamped to 1_100_000
+			policy := makeResourceClaimPolicy(
+				resource.MustParse("0"),       // minAllowed compute
+				resource.MustParse("100"),     // maxAllowed compute
+				resource.MustParse("0"),       // minAllowed memory
+				resource.MustParse("1100000"), // maxAllowed memory (1.1 MB)
+			)
+			hint := computeVerticalHint(bootstrappedObs(), 2000, 1000, 2, policy)
+			Expect(hint).NotTo(BeNil())
+			Expect(hint.DemandPerReplicaResource.MemoryBytes).To(Equal(int64(1_100_000)))
+		})
+
+		It("raises MemoryBytes to minAllowed.memory from policy", func() {
+			// unclamped memoryDemand = 1_128_000; minAllowed = 2_000_000
+			policy := makeResourceClaimPolicy(
+				resource.MustParse("0"),
+				resource.MustParse("100"),
+				resource.MustParse("2000000"), // minAllowed memory (2 MB)
+				resource.MustParse("16Gi"),
+			)
+			hint := computeVerticalHint(bootstrappedObs(), 2000, 1000, 2, policy)
+			Expect(hint).NotTo(BeNil())
+			Expect(hint.DemandPerReplicaResource.MemoryBytes).To(Equal(int64(2_000_000)))
 		})
 	})
 
 	Describe("scale-down path", func() {
 		It("returns nil without step rounding (inversePRC == scaleDownPRC is lossless)", func() {
-			// With a pass-through applyStepPolicy, memoryDemand is computed from targetPRC
-			// so inversePRC always equals scaleDownPRC exactly — the guard fires and
+			// With a pass-through applyStepPolicy (nil policy), memoryDemand is computed from
+			// targetPRC so inversePRC always equals scaleDownPRC exactly — the guard fires and
 			// returns nil. Scale-down hints require step rounding to create headroom.
-			hint := computeVerticalHint(bootstrappedObs(), 500, 2000, 2)
+			hint := computeVerticalHint(bootstrappedObs(), 500, 2000, 2, nil)
 			Expect(hint).To(BeNil())
 		})
 	})
 })
 
 var _ = Describe("applyStepPolicy", func() {
-	It("is a pass-through in the initial implementation", func() {
-		c, m := applyStepPolicy(0.75, 2_000_000.0)
+	It("is a pass-through when policy is nil", func() {
+		c, m := applyStepPolicy(0.75, 2_000_000.0, nil)
 		Expect(c).To(Equal(0.75))
 		Expect(m).To(Equal(2_000_000.0))
+	})
+
+	It("clamps compute above maxAllowed", func() {
+		// maxAllowed compute = "80" → MilliValue=80000 → /1000 = 80.0
+		// but computeDemand is a fraction [0,1] and maxAllowed is also expressed
+		// as a fraction ("1" = 100% → MilliValue=1000 → /1000=1.0)
+		policy := makeResourceClaimPolicy(
+			resource.MustParse("0"),   // min compute
+			resource.MustParse("0.8"), // max compute = 0.8
+			resource.MustParse("0"),
+			resource.MustParse("16Gi"),
+		)
+		c, _ := applyStepPolicy(1.0, 2_000_000.0, policy)
+		Expect(c).To(BeNumerically("~", 0.8, 1e-9))
+	})
+
+	It("clamps memory above maxAllowed", func() {
+		policy := makeResourceClaimPolicy(
+			resource.MustParse("0"),
+			resource.MustParse("1"),
+			resource.MustParse("0"),
+			resource.MustParse("1Mi"), // maxAllowed memory = 1 MiB = 1_048_576 bytes
+		)
+		_, m := applyStepPolicy(0.5, 2_000_000.0, policy)
+		oneMiB := resource.MustParse("1Mi")
+		Expect(m).To(BeNumerically("~", float64(oneMiB.Value()), 1.0))
 	})
 })
 

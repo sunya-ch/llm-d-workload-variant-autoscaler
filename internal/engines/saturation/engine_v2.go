@@ -367,7 +367,6 @@ func logAnalyzerResult(ctx context.Context, modelID, namespace string, nr pipeli
 		return
 	}
 	logger := ctrl.LoggerFrom(ctx)
-	logger.Info("logAnalyzerResult")
 
 	type verticalHintEntry struct {
 		ScaleUpPRC   float64  `json:"scaleUpPRC"`
