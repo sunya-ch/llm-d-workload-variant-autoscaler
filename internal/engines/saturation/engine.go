@@ -220,10 +220,18 @@ func NewEngine(client client.Client, apiReader client.Reader, scheme *runtime.Sc
 	obsStore := observationstore.NewVariantObservationStore()
 	satV2 := saturation_v2.NewSaturationAnalyzer(capacityStore, obsStore)
 
-	// Initialize with default optimizer. The actual optimizer is selected
-	// per-cycle in optimize() based on dynamic config (enableLimiter flag
-	// from ConfigMap), since config arrives after engine init.
-	var scalingOptimizer pipeline.ScalingOptimizer = pipeline.NewCostAwareOptimizer()
+	// rcInventory defaults to DRA-absent. Replaced by SetDRAInventory when
+	// CheckDRACRD confirms the CRD is present.
+	rcInventory := discovery.NewResourceCapacityInventory(client, true /* draAbsent */)
+
+	// Wrap the default inner optimizer in MultiDimensionalOptimizer so vertical
+	// scaling is active from the first tick. The inner optimizer is swapped
+	// per-cycle in optimize() based on the enableLimiter config flag; the
+	// MultiDimensionalOptimizer wrapper is rebuilt each cycle with the same
+	// rcInventory pointer so DRA headroom checks are always current.
+	var scalingOptimizer pipeline.ScalingOptimizer = pipeline.NewMultiDimensionalOptimizer(
+		pipeline.NewCostAwareOptimizer(), rcInventory,
+	)
 
 	podLocator, err := locator.New(client, apiReader)
 	if err != nil {
@@ -248,9 +256,7 @@ func NewEngine(client client.Client, apiReader client.Reader, scheme *runtime.Sc
 		optimizer:               scalingOptimizer,
 		metricsEmitter:          metrics.NewMetricsEmitter(),
 		v1AnalyzerFactory:       defaultV1AnalyzerFactory,
-		// rcInventory defaults to DRA-absent. Call SetDRAInventory after construction
-		// when CheckDRACRD confirms the CRD is present.
-		rcInventory: discovery.NewResourceCapacityInventory(client, true /* draAbsent */),
+		rcInventory:             rcInventory,
 		analyzers: []analyzerEntry{
 			{name: interfaces.SaturationAnalyzerName, analyzer: satV2},
 		},
@@ -289,6 +295,11 @@ func NewEngine(client client.Client, apiReader client.Reader, scheme *runtime.Sc
 // perform DRA headroom checks for vertical scaling.
 func (e *Engine) SetDRAInventory(inv *discovery.ResourceCapacityInventory) {
 	e.rcInventory = inv
+	// Rebuild the current optimizer wrapper so the new inventory takes effect
+	// immediately without waiting for the next per-cycle optimizer selection.
+	if mdo, ok := e.optimizer.(*pipeline.MultiDimensionalOptimizer); ok {
+		e.optimizer = pipeline.NewMultiDimensionalOptimizer(mdo.Inner(), inv)
+	}
 }
 
 // RegisterAnalyzer adds an external analyzer to the engine's analyzer
@@ -326,14 +337,16 @@ func (e *Engine) StartOptimizeLoop(ctx context.Context) {
 }
 
 func (e *Engine) recordActiveOptimizer() {
-	// Record metrics for which optimizer is active
+	// Resolve the inner optimizer name for metric comparison.
+	// MultiDimensionalOptimizer wraps an inner optimizer; metrics track the
+	// inner type ("greedy-by-score" or "cost-aware").
+	innerName := e.optimizer.Name()
+	if mdo, ok := e.optimizer.(*pipeline.MultiDimensionalOptimizer); ok {
+		innerName = mdo.Inner().Name()
+	}
 	optimizerNames := []string{"greedy-by-score", "cost-aware"}
 	for _, name := range optimizerNames {
-		isActive := false // default is false
-		if name == e.optimizer.Name() {
-			isActive = true // only one active at a time
-		}
-		e.metricsEmitter.RecordOptimizerActiveMetric(name, isActive)
+		e.metricsEmitter.RecordOptimizerActiveMetric(name, name == innerName)
 	}
 }
 
@@ -453,17 +466,25 @@ func (e *Engine) optimize(ctx context.Context) (retErr error) {
 		analyzerName = interfaces.QueueingModelAnalyzerName
 	}
 
-	// Select optimizer based on enableLimiter flag (both are stateless, safe to swap)
+	// Select optimizer based on enableLimiter flag (both are stateless, safe to swap).
+	// Always wrap the selected inner optimizer in MultiDimensionalOptimizer so the
+	// vertical scaling pass runs every cycle. rcInventory carries the current DRA
+	// state; draAbsent inventory makes the vertical DRA check a no-op.
 	// Applies to V2 and queueing-model paths which both use the optimizer pipeline.
 	if analyzerName == interfaces.SaturationAnalyzerName || analyzerName == interfaces.QueueingModelAnalyzerName {
-		savedOptimizer := e.optimizer
+		var inner pipeline.ScalingOptimizer
 		if enableLimiter {
-			e.optimizer = pipeline.NewGreedyByScoreOptimizer()
+			inner = pipeline.NewGreedyByScoreOptimizer()
 		} else {
-			e.optimizer = pipeline.NewCostAwareOptimizer()
+			inner = pipeline.NewCostAwareOptimizer()
 		}
-		if savedOptimizer != e.optimizer {
+		newOptimizer := pipeline.NewMultiDimensionalOptimizer(inner, e.rcInventory)
+		if e.optimizer.Name() != newOptimizer.Name() {
+			e.optimizer = newOptimizer
 			e.recordActiveOptimizer() // optimizer has changed, record active optimizer
+		} else {
+			// Same configuration — update inventory reference without changing name.
+			e.optimizer = newOptimizer
 		}
 		logger.V(logging.DEBUG).Info("Optimizer selected", "analyzer", analyzerName, "optimizer", e.optimizer.Name(), "enableLimiter", enableLimiter)
 	}
@@ -809,22 +830,30 @@ func (e *Engine) selectV2Optimizer(
 ) (pipeline.ScalingOptimizer, []*pipeline.ResourceConstraints) {
 	logger := ctrl.LoggerFrom(ctx)
 
-	// GreedyByScore is currently the only GPU-aware optimizer; any future
-	// constraint-consuming optimizer must be added to this guard.
 	optimizer := e.optimizer
-	if _, ok := optimizer.(*pipeline.GreedyByScoreOptimizer); !ok {
+
+	// Resolve the inner optimizer for constraint-provider checks.
+	// MultiDimensionalOptimizer wraps an inner optimizer; GPU constraints are
+	// only needed when the inner is GreedyByScoreOptimizer.
+	inner := optimizer
+	if mdo, ok := optimizer.(*pipeline.MultiDimensionalOptimizer); ok {
+		inner = mdo.Inner()
+	}
+
+	if _, ok := inner.(*pipeline.GreedyByScoreOptimizer); !ok {
+		// CostAwareOptimizer (or unknown): no GPU constraints needed.
 		return optimizer, nil
 	}
 
 	provider, ok := e.GPULimiter.(pipeline.ConstraintProvider)
 	if !ok {
-		return pipeline.NewCostAwareOptimizer(), nil
+		return pipeline.NewMultiDimensionalOptimizer(pipeline.NewCostAwareOptimizer(), e.rcInventory), nil
 	}
 
 	constraint, err := provider.ComputeConstraints(ctx, computeCurrentGPUUsage(requests))
 	if err != nil {
 		logger.Error(err, "Failed to compute GPU constraints, falling back to unlimited (cost-aware) optimizer for this cycle")
-		return pipeline.NewCostAwareOptimizer(), nil
+		return pipeline.NewMultiDimensionalOptimizer(pipeline.NewCostAwareOptimizer(), e.rcInventory), nil
 	}
 	return optimizer, []*pipeline.ResourceConstraints{constraint}
 }

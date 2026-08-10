@@ -41,6 +41,12 @@ func (o *MultiDimensionalOptimizer) Name() string {
 	return "multi-dimensional(" + o.inner.Name() + ")"
 }
 
+// Inner returns the wrapped ScalingOptimizer. Used by the engine to inspect
+// the inner type for GPU constraint checks and metrics recording.
+func (o *MultiDimensionalOptimizer) Inner() ScalingOptimizer {
+	return o.inner
+}
+
 // Optimize produces VariantDecisions with a vertical-first decision pass,
 // falling back to pure horizontal when DRA headroom is insufficient or unavailable.
 func (o *MultiDimensionalOptimizer) Optimize(
