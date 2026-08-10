@@ -311,9 +311,9 @@ func annotationSourcedVariants(ctx context.Context, k8sClient client.Client) ([]
 	// When a VPA targets the same Deployment as an existing HPA/ScaledObject entry,
 	// the VPA's ResourceClaimPolicy is merged onto that entry rather than replacing it
 	// so the unified variant carries both horizontal bounds and the DRA resource claim.
-	// When no HPA/SO entry exists for the target yet (VPA created before HPA), a
-	// VPA-only VA is seeded with MaxReplicas=1; it will be superseded on the next tick
-	// once the HPA appears.
+	// When no HPA/SO entry exists for the target, the VPA is skipped: a VPA alone
+	// has no meaningful horizontal bounds and would produce a phantom variant name
+	// that persists in Prometheus until the series go stale.
 	// TODO(#1134): scope to tracked namespaces only.
 	var vpaList vpav1.VerticalPodAutoscalerList
 	if err := k8sClient.List(ctx, &vpaList); err != nil {
@@ -348,10 +348,11 @@ func annotationSourcedVariants(ctx context.Context, k8sClient client.Client) ([]
 				// Merge: keep horizontal bounds from HPA/SO, add VPA's ResourceClaimPolicy.
 				existing.Spec.ResourceClaimPolicy = vaFromVPA.Spec.ResourceClaimPolicy
 				byTarget[key] = existing
-			} else {
-				// VPA-only entry: no HPA/SO seen yet for this target.
-				byTarget[key] = *vaFromVPA
 			}
+			// No HPA/SO for this target yet — skip. A VPA alone has no replica
+			// bounds, so emitting a variant at this point would produce a phantom
+			// series (named after the VPA) that lingers in Prometheus even after
+			// the HPA arrives and the correct merged variant takes over.
 		}
 	}
 

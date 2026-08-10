@@ -349,7 +349,7 @@ func managedVPA(ns, name, targetName, modelID string) *vpav1.VerticalPodAutoscal
 func TestAnnotationSourcedVariants_VPA(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("VPA-only: no HPA — seeds VPA-only VA with MaxReplicas=1", func(t *testing.T) {
+	t.Run("VPA-only: no HPA — skipped, returns 0 variants", func(t *testing.T) {
 		s := variantTestScheme(t)
 		cl := fake.NewClientBuilder().WithScheme(s).WithObjects(
 			managedVPA("ns1", "vpa-a", "deploy-a", "model-x"),
@@ -359,15 +359,8 @@ func TestAnnotationSourcedVariants_VPA(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if len(result) != 1 {
-			t.Fatalf("want 1 VA, got %d", len(result))
-		}
-		va := result[0]
-		if va.Spec.MaxReplicas != 1 {
-			t.Errorf("MaxReplicas = %d, want 1 for VPA-only variant", va.Spec.MaxReplicas)
-		}
-		if va.Spec.ResourceClaimPolicy == nil {
-			t.Error("ResourceClaimPolicy = nil, want non-nil for VPA-only variant")
+		if len(result) != 0 {
+			t.Fatalf("want 0 VAs (VPA without paired HPA/SO must be skipped), got %d", len(result))
 		}
 	})
 
@@ -397,10 +390,10 @@ func TestAnnotationSourcedVariants_VPA(t *testing.T) {
 		}
 	})
 
-	t.Run("VPA first (VPA-only tick), then HPA arrives: next tick produces merged VA", func(t *testing.T) {
+	t.Run("VPA first, then HPA arrives: tick 1 returns nothing, tick 2 returns merged VA", func(t *testing.T) {
 		s := variantTestScheme(t)
 
-		// Tick 1: only the VPA exists — produces a VPA-only VA (MaxReplicas=1).
+		// Tick 1: only the VPA exists — must be skipped (no phantom variant).
 		clVPAOnly := fake.NewClientBuilder().WithScheme(s).WithObjects(
 			managedVPA("ns1", "vpa-a", "deploy-a", "model-x"),
 		).Build()
@@ -408,14 +401,8 @@ func TestAnnotationSourcedVariants_VPA(t *testing.T) {
 		if err != nil {
 			t.Fatalf("tick 1 unexpected error: %v", err)
 		}
-		if len(tick1) != 1 {
-			t.Fatalf("tick 1: want 1 VA, got %d", len(tick1))
-		}
-		if tick1[0].Spec.MaxReplicas != 1 {
-			t.Errorf("tick 1 MaxReplicas = %d, want 1 (VPA-only, conservative)", tick1[0].Spec.MaxReplicas)
-		}
-		if tick1[0].Spec.ResourceClaimPolicy == nil {
-			t.Error("tick 1: ResourceClaimPolicy = nil, want non-nil")
+		if len(tick1) != 0 {
+			t.Fatalf("tick 1: want 0 VAs (VPA-only must be skipped), got %d", len(tick1))
 		}
 
 		// Tick 2: HPA has now been created — merged VA carries HPA bounds + VPA policy.
