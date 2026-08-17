@@ -1036,17 +1036,22 @@ func (e *Engine) BuildVariantStates(
 		if va.Status.DesiredOptimizedAlloc.NumReplicas != nil {
 			desiredReplicas = int(*va.Status.DesiredOptimizedAlloc.NumReplicas)
 		}
+		containerName := ""
+		if va.Spec.ResourceClaimPolicy != nil {
+			containerName = scaletarget.ResourceClaimContainerName(scaleTarget.GetLeaderPodTemplateSpec())
+		}
 		states = append(states, interfaces.VariantReplicaState{
-			VariantName:            va.Name,
-			CurrentReplicas:        currentReplicas,
-			DesiredReplicas:        desiredReplicas,
-			PendingReplicas:        pendingReplicas,
-			GPUsPerReplica:         gpusPerReplica,
-			Role:                   role,
-			MinReplicas:            minReplicas,
-			MaxReplicas:            maxReplicas,
-			VerticalScalingEnabled: va.Spec.ResourceClaimPolicy != nil,
-			ResourceClaimPolicy:    va.Spec.ResourceClaimPolicy,
+			VariantName:                va.Name,
+			CurrentReplicas:            currentReplicas,
+			DesiredReplicas:            desiredReplicas,
+			PendingReplicas:            pendingReplicas,
+			GPUsPerReplica:             gpusPerReplica,
+			Role:                       role,
+			MinReplicas:                minReplicas,
+			MaxReplicas:                maxReplicas,
+			VerticalScalingEnabled:     va.Spec.ResourceClaimPolicy != nil,
+			ResourceClaimPolicy:        va.Spec.ResourceClaimPolicy,
+			ResourceClaimContainerName: containerName,
 		})
 	}
 
@@ -1637,20 +1642,65 @@ func (e *Engine) applySaturationDecisions(
 		if hasDecision && constants.IsAcceleratorResolved(acceleratorName) {
 			act.RecordSaturationMetrics(ctx, decision)
 
-			// Emit vertical scaling metrics when the optimizer produced a
-			// vertical action for this variant.
+			// Always emit wva_desired_capacity_per_device for vertically-enabled
+			// variants so the gauge is present even when no scaling action occurred.
+			// On an active vertical action, use DemandPerReplicaResource (step-policy
+			// rounded target). Otherwise use MaxAllowed from the ResourceClaimPolicy
+			// as the steady-state default (full declared capacity per device).
+			logger.V(logging.DEBUG).Info("Vertical scaling metric emission",
+				"variant", decision.VariantName,
+				"verticalAction", decision.VerticalAction,
+				"demandPerReplicaResource", decision.DemandPerReplicaResource,
+			)
 			if decision.VerticalAction == interfaces.VerticalScaleUp || decision.VerticalAction == interfaces.VerticalScaleDown {
+				// Active vertical action: derive capacity values from DemandPerReplicaResource
+				// using the same unit convention as MaxAllowed (Value() for all dimensions).
 				capacityValues := map[string]int64{}
-				if decision.DemandPerReplicaResource != nil {
-					capacityValues["memory"] = decision.DemandPerReplicaResource.MemoryBytes
+				if decision.DemandPerReplicaResource != nil && va.Spec.ResourceClaimPolicy != nil {
+					for name := range va.Spec.ResourceClaimPolicy.MaxAllowed {
+						switch string(name) {
+						case "memory":
+							capacityValues[string(name)] = decision.DemandPerReplicaResource.MemoryBytes
+						case "compute":
+							// ComputeFraction is 0–1; MaxAllowed "compute" is a dimensionless
+							// quantity whose Value() gives the raw number (e.g. "100" → 100).
+							// Scale fraction to the same unit: fraction × maxCompute.
+							if maxQ, ok := va.Spec.ResourceClaimPolicy.MaxAllowed[name]; ok {
+								capacityValues[string(name)] = int64(decision.DemandPerReplicaResource.ComputeFraction * float64(maxQ.Value()))
+							}
+						}
+					}
 				}
+				logger.Info("Emitting wva_desired_capacity_per_device from vertical action",
+					"variant", decision.VariantName,
+					"action", decision.VerticalAction,
+					"capacityValues", capacityValues,
+				)
+				e.metricsEmitter.RecordVerticalCapacityGauge(
+					decision.VariantName, decision.Namespace, decision.ModelID,
+					acceleratorName, decision.ResourceClaimContainerName, capacityValues,
+				)
 				direction := "up"
 				if decision.VerticalAction == interfaces.VerticalScaleDown {
 					direction = "down"
 				}
-				e.metricsEmitter.RecordVerticalScalingMetrics(
+				e.metricsEmitter.RecordVerticalScalingAction(
+					decision.VariantName, decision.Namespace, decision.ModelID, direction,
+				)
+			} else if va.Spec.ResourceClaimPolicy != nil {
+				// Steady-state: emit MaxAllowed per dimension using Value() so the unit
+				// matches the raw declared capacity (e.g. "100" → 100, "16Gi" → 17179869184).
+				capacityValues := make(map[string]int64, len(va.Spec.ResourceClaimPolicy.MaxAllowed))
+				for name, qty := range va.Spec.ResourceClaimPolicy.MaxAllowed {
+					capacityValues[string(name)] = qty.Value()
+				}
+				logger.Info("Emitting wva_desired_capacity_per_device from ResourceClaimPolicy MaxAllowed",
+					"variant", decision.VariantName,
+					"capacityValues", capacityValues,
+				)
+				e.metricsEmitter.RecordVerticalCapacityGauge(
 					decision.VariantName, decision.Namespace, decision.ModelID,
-					acceleratorName, capacityValues, direction,
+					acceleratorName, decision.ResourceClaimContainerName, capacityValues,
 				)
 			}
 		}

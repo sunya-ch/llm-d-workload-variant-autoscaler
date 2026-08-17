@@ -72,6 +72,33 @@ func FetchScaleTarget(ctx context.Context, c client.Client, vaName, kind, name, 
 	return nil, fmt.Errorf("invalid scale target kind %q", kind)
 }
 
+// ResourceClaimContainerName returns the name of the first container in the pod
+// template whose resources.claims entry references a ResourceClaimTemplate
+// (via spec.resourceClaims[*].resourceClaimTemplateName). This identifies the
+// container that owns the DRA device allocation.
+// Returns "" when no such container exists in the template.
+func ResourceClaimContainerName(podTemplate *corev1.PodTemplateSpec) string {
+	if podTemplate == nil {
+		return ""
+	}
+	// Collect claim names that come from a ResourceClaimTemplate.
+	templateClaims := map[string]bool{}
+	for _, prc := range podTemplate.Spec.ResourceClaims {
+		if prc.ResourceClaimTemplateName != nil {
+			templateClaims[prc.Name] = true
+		}
+	}
+	// Return the first container that references one of those claim names.
+	for _, c := range podTemplate.Spec.Containers {
+		for _, cr := range c.Resources.Claims {
+			if templateClaims[cr.Name] {
+				return c.Name
+			}
+		}
+	}
+	return ""
+}
+
 // fetchResourceClaimTemplate returns the first DRA ResourceClaimTemplate referenced by
 // a pod template's spec.resourceClaims[*].resourceClaimTemplateName entries.
 // Returns nil if none are referenced or the first matching template cannot be fetched.

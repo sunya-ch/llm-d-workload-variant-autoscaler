@@ -276,18 +276,19 @@ func buildDecisionsWithOptimizer(
 		currentPRC := vc.PerReplicaCapacity
 
 		decision := interfaces.VariantDecision{
-			VariantName:               name,
-			ModelID:                   req.ModelID,
-			Namespace:                 req.Namespace,
-			AcceleratorName:           vc.AcceleratorName,
-			Cost:                      vc.Cost,
-			Role:                      state.Role,
-			CurrentReplicas:           state.CurrentReplicas,
-			TargetReplicas:            target,
-			MinReplicas:               state.MinReplicas,
-			MaxReplicas:               state.MaxReplicas,
-			CurrentPerReplicaCapacity: currentPRC,
-			VerticalAction:            interfaces.VerticalNoChange,
+			VariantName:                name,
+			ModelID:                    req.ModelID,
+			Namespace:                  req.Namespace,
+			AcceleratorName:            vc.AcceleratorName,
+			Cost:                       vc.Cost,
+			Role:                       state.Role,
+			CurrentReplicas:            state.CurrentReplicas,
+			TargetReplicas:             target,
+			MinReplicas:                state.MinReplicas,
+			MaxReplicas:                state.MaxReplicas,
+			CurrentPerReplicaCapacity:  currentPRC,
+			VerticalAction:             interfaces.VerticalNoChange,
+			ResourceClaimContainerName: state.ResourceClaimContainerName,
 		}
 		// SetDecisionReason is the single place that sets d.Action (avoids a
 		// redundant Action assignment in the struct literal above).

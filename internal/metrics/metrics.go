@@ -75,8 +75,8 @@ var (
 	saturationMetricsUp   *prometheus.GaugeVec
 
 	// Vertical scaling metrics
-	variantTargetCapacityPerGPU *prometheus.GaugeVec
-	verticalScalingTotal        *prometheus.CounterVec
+	desiredCapacityPerDevice *prometheus.GaugeVec
+	verticalScalingTotal     *prometheus.CounterVec
 
 	// controllerInstance stores the optional controller instance identifier.
 	// When set, it's added as a label to all emitted metrics.
@@ -399,6 +399,7 @@ func InitMetrics(registry prometheus.Registerer) error {
 	verticalCapacityLabels := []string{
 		constants.LabelVariantName, constants.LabelNamespace,
 		constants.LabelModelID, constants.LabelAcceleratorType, constants.LabelCapacity,
+		constants.LabelTargetContainer,
 	}
 	verticalCounterLabels := []string{
 		constants.LabelVariantName, constants.LabelNamespace,
@@ -408,9 +409,9 @@ func InitMetrics(registry prometheus.Registerer) error {
 		verticalCapacityLabels = append(verticalCapacityLabels, constants.LabelControllerInstance)
 		verticalCounterLabels = append(verticalCounterLabels, constants.LabelControllerInstance)
 	}
-	variantTargetCapacityPerGPU = prometheus.NewGaugeVec(
+	desiredCapacityPerDevice = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: constants.WVAVariantTargetCapacityPerGPU,
+			Name: constants.WVADesiredCapacityPerDevice,
 			Help: "Last recommended DRA capacity target per replica for vertical-scaling-eligible variants. The 'capacity' label names the DRA capacity dimension (e.g. gpu.nvidia.com/vram).",
 		},
 		verticalCapacityLabels,
@@ -505,8 +506,8 @@ func InitMetrics(registry prometheus.Registerer) error {
 	if err := registry.Register(saturationMetricsUp); err != nil {
 		return fmt.Errorf("failed to register saturationMetricsUp metric: %w", err)
 	}
-	if err := registry.Register(variantTargetCapacityPerGPU); err != nil {
-		return fmt.Errorf("failed to register variantTargetCapacityPerGPU metric: %w", err)
+	if err := registry.Register(desiredCapacityPerDevice); err != nil {
+		return fmt.Errorf("failed to register desiredCapacityPerDevice metric: %w", err)
 	}
 	if err := registry.Register(verticalScalingTotal); err != nil {
 		return fmt.Errorf("failed to register verticalScalingTotal metric: %w", err)
@@ -974,18 +975,18 @@ func (m *MetricsEmitter) RecordSaturationFreshness(ctx context.Context, variantN
 	saturationMetricsUp.With(labels).Set(value)
 }
 
-// RecordVerticalScalingMetrics sets the target capacity gauge for each capacity
-// dimension and increments the vertical scaling counter.
+// RecordVerticalCapacityGauge sets wva_desired_capacity_per_device for each
+// capacity dimension. It is called every cycle for vertically-enabled variants
+// so the gauge is always present, regardless of whether a scaling action occurred.
 //
-// capacityValues maps DRA capacity dimension names (e.g. "gpu.nvidia.com/vram")
-// to the target value in milli-units (as returned by resource.Quantity.MilliValue()).
-// direction must be "up" or "down".
-func (m *MetricsEmitter) RecordVerticalScalingMetrics(
-	variantName, namespace, modelID, acceleratorType string,
+// capacityValues maps DRA capacity dimension names to values in milli-units.
+// targetContainer is the name of the container in the pod template that owns
+// the DRA ResourceClaim (the target_container label).
+func (m *MetricsEmitter) RecordVerticalCapacityGauge(
+	variantName, namespace, modelID, acceleratorType, targetContainer string,
 	capacityValues map[string]int64,
-	direction string,
 ) {
-	if variantTargetCapacityPerGPU == nil || verticalScalingTotal == nil {
+	if desiredCapacityPerDevice == nil {
 		return
 	}
 	for capName, capVal := range capacityValues {
@@ -995,13 +996,25 @@ func (m *MetricsEmitter) RecordVerticalScalingMetrics(
 			constants.LabelModelID:         modelID,
 			constants.LabelAcceleratorType: acceleratorType,
 			constants.LabelCapacity:        capName,
+			constants.LabelTargetContainer: targetContainer,
 		}
 		if controllerInstance != "" {
 			labels[constants.LabelControllerInstance] = controllerInstance
 		}
-		variantTargetCapacityPerGPU.With(labels).Set(float64(capVal))
+		desiredCapacityPerDevice.With(labels).Set(float64(capVal))
 	}
+}
 
+// RecordVerticalScalingAction increments the wva_vertical_scaling_total counter.
+// Call this only when an actual vertical scaling action (up or down) was produced.
+// direction must be "up" or "down".
+func (m *MetricsEmitter) RecordVerticalScalingAction(
+	variantName, namespace, modelID string,
+	direction string,
+) {
+	if verticalScalingTotal == nil {
+		return
+	}
 	counterLabels := prometheus.Labels{
 		constants.LabelVariantName: variantName,
 		constants.LabelNamespace:   namespace,

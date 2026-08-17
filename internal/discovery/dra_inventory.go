@@ -3,8 +3,11 @@ package discovery
 import (
 	"context"
 
+	corev1 "k8s.io/api/core/v1"
 	resourcev1beta1 "k8s.io/api/resource/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/constants"
 )
 
 // ResourceCapacityInventory tracks available and claimed DRA device capacity
@@ -29,6 +32,9 @@ func NewResourceCapacityInventory(c client.Client, draAbsent bool) *ResourceCapa
 //
 //   - draAvailable:     capacityName → total unallocated headroom across all devices.
 //   - claimedByVariant: variantName → capacityName → claimed quantity (in milli-units).
+//
+// Variant attribution uses the pod's llm-d.ai/variant label together with
+// pod.status.resourceClaimStatuses to map each ResourceClaim back to its variant.
 //
 // Returns (nil, nil) when the DRA CRD is absent or when the list fails.
 // Callers must treat nil draAvailable as "no vertical action this tick".
@@ -62,7 +68,31 @@ func (r *ResourceCapacityInventory) Snapshot(ctx context.Context) (
 		}
 	}
 
-	// --- Build claimed capacity from ResourceClaims (all namespaces) ---
+	// --- Build claim → variant mapping via pod.status.resourceClaimStatuses ---
+	// Pods carry a llm-d.ai/variant label whose value is the variant name.
+	// pod.status.resourceClaimStatuses[*].resourceClaimName gives the exact
+	// ResourceClaim name for each ResourceClaimTemplate referenced by the pod.
+	// Key: "namespace/claimName"
+	claimVariant := map[string]string{}
+	var podList corev1.PodList
+	if err := r.client.List(ctx, &podList); err == nil {
+		for i := range podList.Items {
+			pod := &podList.Items[i]
+			variantName := pod.Labels[constants.VariantLabelKey]
+			if variantName == "" {
+				continue
+			}
+			for _, cs := range pod.Status.ResourceClaimStatuses {
+				if cs.ResourceClaimName == nil {
+					continue
+				}
+				key := pod.Namespace + "/" + *cs.ResourceClaimName
+				claimVariant[key] = variantName
+			}
+		}
+	}
+
+	// --- Build claimed capacity from ResourceClaims ---
 	var claimList resourcev1beta1.ResourceClaimList
 	if err := r.client.List(ctx, &claimList); err != nil {
 		return nil, nil
@@ -76,17 +106,14 @@ func (r *ResourceCapacityInventory) Snapshot(ctx context.Context) (
 		if claim.Status.Allocation == nil {
 			continue
 		}
+		variantName := claimVariant[claim.Namespace+"/"+claim.Name]
+
 		for _, res := range claim.Status.Allocation.Devices.Results {
 			for capName, qty := range res.ConsumedCapacity {
 				millis := qty.MilliValue()
 				claimedTotal[string(capName)] += millis
-
-				// Map claimed capacity to the variant via claim owner labels.
-				// The variant name is carried in the standard WVA label
-				// "app.kubernetes.io/name" on the ResourceClaim.
-				variantName := claim.Labels["app.kubernetes.io/name"]
 				if variantName == "" {
-					variantName = claim.Name // fallback: use claim name
+					continue
 				}
 				if claimedByVariant[variantName] == nil {
 					claimedByVariant[variantName] = map[string]int64{}

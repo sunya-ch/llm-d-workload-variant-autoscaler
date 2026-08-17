@@ -147,10 +147,9 @@ type ReplicaMetrics struct {
 	// --- Fields for Vertical Scaling ---
 
 	// GpuMemoryUtilization is the fraction of GPU memory reserved for the KV cache
-	// on this replica, sourced from the --gpu-memory-utilization vLLM flag.
-	// Populated from VLLMEngineParams parsed from the replica's parent Deployment args
-	// and propagated into ReplicaMetrics so both analyzers can use it without
-	// importing saturation_v2. Defaults to 0.9 (vLLM default) when unavailable.
+	// on this replica, sourced from vllm:cache_config_info label "gpu_memory_utilization".
+	// Zero when the label is absent (e.g. older vLLM versions that do not emit it);
+	// consumers should fall back to 0.9 (vLLM default) in that case.
 	// Used by UpdateFromReplicaMetrics when deriving MemoryWeight.
 	GpuMemoryUtilization float64
 
@@ -347,6 +346,10 @@ type VariantDecision struct {
 	// vertical action. Nil when VerticalAction == VerticalNoChange or the observation
 	// store was not yet bootstrapped when the hint was produced.
 	DemandPerReplicaResource *ResourceRequirement
+	// ResourceClaimContainerName is the name of the container in the pod template
+	// that owns the DRA ResourceClaim. Passed through from VariantReplicaState for
+	// use as the target_container label on wva_desired_capacity_per_device.
+	ResourceClaimContainerName string
 
 	// --- Replica bounds ---
 	// MinReplicas is the minimum number of replicas for this variant (from VA spec field).
@@ -460,6 +463,11 @@ type VariantReplicaState struct {
 	// scaling is not configured. Used by analyzers to clamp DemandPerReplicaResource
 	// to [MinAllowed, MaxAllowed] via applyStepPolicy.
 	ResourceClaimPolicy *vpav1.ResourceClaimPolicy
+	// ResourceClaimContainerName is the name of the container in the pod template
+	// whose resources.claims entry references the ResourceClaimTemplate. Used as
+	// the exported_container label on wva_desired_capacity_per_device. Empty when
+	// vertical scaling is not configured or the container cannot be resolved.
+	ResourceClaimContainerName string
 }
 
 // SaturationAnalyzer analyzes replica saturation metrics and recommends scaling decisions

@@ -417,8 +417,9 @@ func (c *ReplicaMetricsCollector) collectReplicaMetrics(
 		kvUsageInstant      float64
 		vllmRequestRate     float64
 		// Vertical scaling fields
-		promptTokenRate float64
-		deltaTokens     float64
+		promptTokenRate      float64
+		deltaTokens          float64
+		gpuMemoryUtilization float64
 	}
 
 	// trackMetricFreshness determines the freshness status of metrics in podMetricData
@@ -564,6 +565,36 @@ func (c *ReplicaMetricsCollector) collectReplicaMetrics(
 					"pod", podName,
 					"numGpuBlocks", data.numGpuBlocks,
 					"blockSize", data.blockSize)
+			}
+		}
+	}
+
+	// Process GPU memory utilization from vllm:cache_config_info label (V2 / vertical scaling)
+	//
+	// Queried separately from QueryCacheConfigInfo so that num_gpu_blocks / block_size
+	// discovery is not disrupted when this label is absent (older vLLM builds). The
+	// same namespace-wide scope applies: attach only to instances already discovered
+	// by the model-scoped KV/queue queries.
+	if result := results[registration.QueryGpuMemoryUtilization]; result != nil {
+		if !result.HasError() {
+			for _, value := range result.Values {
+				instanceKey, podName, _ := c.buildInstanceKey(ctx, namespace, value.Labels)
+				if instanceKey == "" {
+					continue
+				}
+				data := podData[instanceKey]
+				if data == nil {
+					continue
+				}
+				if utilStr, ok := value.Labels["gpu_memory_utilization"]; ok && utilStr != "" {
+					if util, err := strconv.ParseFloat(utilStr, 64); err == nil && util > 0 {
+						data.gpuMemoryUtilization = util
+						logger.V(logging.DEBUG).Info("GPU memory utilization metric",
+							"instanceKey", instanceKey,
+							"pod", podName,
+							"gpuMemoryUtilization", util)
+					}
+				}
 			}
 		}
 	}
@@ -837,15 +868,13 @@ func (c *ReplicaMetricsCollector) collectReplicaMetrics(
 	// These are not Prometheus metrics — they are parsed from the Deployment/LWS spec.
 	// Map key is scale target key (namespace/name).
 	type scaleTargetVLLMFields struct {
-		maxBatchSize         int64
-		gpuMemoryUtilization float64
+		maxBatchSize int64
 	}
 	scaleTargetFields := make(map[string]scaleTargetVLLMFields, len(scaleTargets))
 	for key, scaleTarget := range scaleTargets {
 		params := saturation_v2.ParseVLLMArgs(scaleTarget)
 		scaleTargetFields[key] = scaleTargetVLLMFields{
-			maxBatchSize:         params.MaxNumSeqs,
-			gpuMemoryUtilization: params.GpuMemoryUtilization,
+			maxBatchSize: params.MaxNumSeqs,
 		}
 	}
 
@@ -953,14 +982,12 @@ func (c *ReplicaMetricsCollector) collectReplicaMetrics(
 			tokensInUse = int64(rounded)
 		}
 
-		// Look up MaxBatchSize and GpuMemoryUtilization from vLLM deployment args.
+		// Look up MaxBatchSize from vLLM deployment args.
 		var maxBatchSize int64
-		var gpuMemoryUtilization float64
 		if va, ok := variantAutoscalings[variantKey]; ok && va != nil {
 			key := utils.GetNamespacedKey(namespace, va.Spec.ScaleTargetRef.Name)
 			if fields, ok := scaleTargetFields[key]; ok {
 				maxBatchSize = fields.maxBatchSize
-				gpuMemoryUtilization = fields.gpuMemoryUtilization
 			}
 		}
 
@@ -995,7 +1022,7 @@ func (c *ReplicaMetricsCollector) collectReplicaMetrics(
 			// DeltaCacheBytes: KvCacheUsage × TotalKvCapacityTokens × BytesPerKVToken.
 			// Uses only vllm:kv_cache_usage_perc and vllm:cache_config_info — both
 			// documented simulator metrics. Zero when cache config is unavailable.
-			GpuMemoryUtilization: gpuMemoryUtilization,
+			GpuMemoryUtilization: data.gpuMemoryUtilization,
 			PromptTokenRate:      data.promptTokenRate,
 			DeltaCacheBytes:      data.kvUsage * float64(totalKvCapacityTokens) * analyzerconstants.BytesPerKVToken,
 			DeltaTokens:          data.deltaTokens,

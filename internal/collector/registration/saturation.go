@@ -11,10 +11,11 @@ const (
 	QueryQueueLength  = "queue_length"
 
 	// V2 queries (token-based capacity analysis)
-	QueryCacheConfigInfo    = "cache_config_info"
-	QueryAvgOutputTokens    = "avg_output_tokens"
-	QueryAvgInputTokens     = "avg_input_tokens"
-	QueryPrefixCacheHitRate = "prefix_cache_hit_rate"
+	QueryCacheConfigInfo      = "cache_config_info"
+	QueryGpuMemoryUtilization = "gpu_memory_utilization"
+	QueryAvgOutputTokens      = "avg_output_tokens"
+	QueryAvgInputTokens       = "avg_input_tokens"
+	QueryPrefixCacheHitRate   = "prefix_cache_hit_rate"
 
 	// Vertical scaling queries (per-pod, used by VariantObservationStore)
 	QueryPromptTokenRate = "prompt_token_rate"
@@ -72,6 +73,20 @@ func RegisterSaturationQueries(sourceRegistry *source.SourceRegistry) {
 		Template:    `max by (instance, pod, llm_d_ai_variant, num_gpu_blocks, block_size) (vllm:cache_config_info{namespace="{{.namespace}}"})`,
 		Params:      []string{source.ParamNamespace},
 		Description: "KV cache configuration info per instance (num_gpu_blocks and block_size as labels)",
+	})
+
+	// GPU memory utilization per instance — sourced from vllm:cache_config_info label
+	// "gpu_memory_utilization". Queried separately from QueryCacheConfigInfo so that
+	// num_gpu_blocks / block_size discovery is not affected when this label is absent
+	// (older vLLM versions). Zero result means the label is not emitted; consumers
+	// fall back to the vLLM default of 0.9.
+	// Same namespace-wide scope as QueryCacheConfigInfo — no model_name label.
+	registry.MustRegister(source.QueryTemplate{
+		Name:        QueryGpuMemoryUtilization,
+		Type:        source.QueryTypePromQL,
+		Template:    `max by (instance, pod, llm_d_ai_variant, gpu_memory_utilization) (vllm:cache_config_info{namespace="{{.namespace}}"})`,
+		Params:      []string{source.ParamNamespace},
+		Description: "GPU memory utilization fraction per instance from vllm:cache_config_info label (0.0-1.0)",
 	})
 
 	// Average output (generation) tokens per completed request
